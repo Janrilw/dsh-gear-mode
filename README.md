@@ -1,5 +1,7 @@
 # dsh-gear-mode
 
+> 挂挡真的很爽啊 ！！
+
 **给 DeepSeek Harness 装一列行动档位：对话区左侧滑轨一点即换挡，从「只读规划」到「全自动」，模型只能降不能升，另有一个随时可拉的手刹。**
 
 ![档位滑轨演示](https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-demo.gif)
@@ -111,12 +113,12 @@ dsh plugin --profile web add github:Janrilw/dsh-gear-mode
 
 ## 兼容性
 
-- **实测**：`dsh 0.2.1-rc.2`（`web` 与 `desktop` profile）。
+- **实测**：`dsh 0.2.1-rc.2`。
 - `engines.dsh`：`>=0.2.1-rc.2 <0.3.0`。不满足时宿主不会激活它。
 
 ## 权限与风险
 
-- 写入范围：只往会话里发一条 `/gear <档位>`（与你在输入框里手动敲命令等价），不写文件、不改工作区。
+- 写入范围：只往会话里发一条 `/gear <档位>`，其他不动。
 - 网络：不请求任何外部服务，不含遥测，不收集任何数据。
 - 提示词：会向每条请求注入一段运行时上下文（约 1–2 KB），内容全部来自本仓库的 `prompts.md`。
 - 工具：`set_gear` 会出现在模型可用工具列表里；`ctx.tools.guard` 在手刹落下时拦截**全部**工具调用。
@@ -127,25 +129,6 @@ dsh plugin --profile web add github:Janrilw/dsh-gear-mode
 - 模型不能升档，只能降档或拉手刹——这是刻意的设计，升档必须由人操作。
 - 手刹不中断正在跑的回合（模型需要能把现状汇报出来），它约束的是"不再推进、不再调工具"。
 - 滑轨位置靠测量外壳标记（`[data-shell-overlay]`、`[data-slot="main"]`）得出；若外壳改结构，位置会失准。
-- 深色/浅色主题都实测过；其它自定义主题未逐一验证。
-
-## 实现要点
-
-| 层次 | 实现 |
-|---|---|
-| 状态 | `gear` 会话投影（`ctx.sessionProjections`），折叠 `/gear` 的 `command/run`+`command/done` 与 `set_gear` 的 `tool/result.meta`；不新增会话事件类型 |
-| 提示词 | `ctx.systemPrompt.context({ name: 'gear:mode', order: APPROVAL_POLICY })`——与 `sandbox:policy` 同一机制 |
-| 用户入口 | `shell.overlay` 槽的滑轨 + `/gear` 命令，两者都只是往会话里发同一条命令 |
-| 模型入口 | `set_gear` 工具，按 rank 只允许降档（P/R/NT/NC/NE=0，M-=1，M+=2，D=3，A=4） |
-| 手刹 | `ctx.tools.guard()`：`brake === true` 时拒绝全部工具调用 |
-
-依赖：Host 侧 `tools`、`systemPrompt`、`sessionProjections`（硬依赖），`commands` 可选；Client 侧 `slots`、`sessions`、`locale`。无第三方依赖，样式只用 `--dsw-alias-*` 主题 token。
-
-更细的分层图、投影状态机、客户端手势节奏、修改指引与坑位清单见 [docs/ARCHITECTURE.md](https://github.com/Janrilw/dsh-gear-mode/blob/main/docs/ARCHITECTURE.md)。
-
-## 验证记录
-
-在 `web` profile 实测：滑轨渲染与交互、`/gear` 命令、投影 checkpoint、切档后模型自述档位、升档被拒、手刹后工具被拦、位置跟随侧栏、5 秒静默、手刹二次确认与 750ms 解除，均通过。
 
 ## License
 
