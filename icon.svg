@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Gear rail with handbrake">
+  <rect width="64" height="64" rx="14" fill="#f2f3ef"/>
+  <rect x="17" y="8" width="13" height="36" rx="6.5" fill="#303631"/>
+  <circle cx="23.5" cy="15" r="2.6" fill="#f2f3ef"/>
+  <circle cx="23.5" cy="26" r="2.6" fill="#8f958b"/>
+  <circle cx="23.5" cy="37" r="2.6" fill="#8f958b"/>
+  <path d="M36 14v13M36 35v13" stroke="#c6cabf" stroke-width="2.2" stroke-linecap="round"/>
+  <circle cx="44" cy="46" r="10" fill="none" stroke="#df3035" stroke-width="2.4"/>
+  <path d="M40.5 41.5v9M47.5 41.5v9M40.5 46h7" stroke="#df3035" stroke-width="2" stroke-linecap="round"/>
+</svg>

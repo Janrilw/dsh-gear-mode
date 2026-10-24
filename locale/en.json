@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Gear Rail",
+    "description": "A left-edge gear rail (P/R/N/M/D/A plus handbrake H) over session-scoped action gears: switching a gear injects that gear's behavior prompt, and a reduce-only set_gear tool is offered to the model."
+  }
+}
