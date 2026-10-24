@@ -7,8 +7,9 @@
  * - 状态是会话日志推导出来的（`gear` 会话投影），resume / fork 后自动恢复；
  * - 每次请求把当前档位写进**运行时上下文**（`systemPrompt.context`），
  *   与 `sandbox:policy` / `approval:policy` 同一机制，模型每条请求都会重读；
- * - 用户用前端左侧档位模块或 `/gear` 命令切档；`set_gear` 工具只允许
- *   「向上调整」（降低自治：A→D→M→NPR）与随时拉手刹；
+ * - 用户用前端左侧档位模块或 `/gear` 命令切档；`set_gear` 工具「向上调整」
+ *   （降低自治：A→D→M→NPR）直接生效，升档则用 `ctx.userQuestions` 弹卡片请
+ *   用户批准（与自带 `exit_plan_mode` 同一套机制），被拒绝就保持原档位；
  * - 手刹落下后 `tools.guard` 拦下所有工具调用，符合「不推进进度、不调工具、
  *   立即汇报现状」的约定。只有用户能放下手刹。
  *
@@ -294,6 +295,45 @@ function describe(state) {
 
 export const inject = ['tools', 'systemPrompt', 'sessionProjections'];
 
+/** 升档卡片的批准选项文案（含目标档位，避免与「保持」混淆）。 */
+const approveLabel = (to) => `允许升到 ${to}`;
+
+/**
+ * 升档申请：仿自带 `exit_plan_mode`，用 `ctx.userQuestions` 弹一张卡片让用户裁决。
+ *
+ * 用户关闭卡片或本轮被中断都算拒绝；没有可用回答者（子 agent、服务重载）
+ * 返回 `'unavailable'`，由调用方退回硬拒绝，免得子 agent 里永远等不到人。
+ *
+ * @returns `'approved'` | `'declined'` | `'unavailable'`
+ */
+async function requestUpshift(ctx, { agent, signal, from, to, reason }) {
+  const questions = ctx.get('userQuestions');
+  if (questions === undefined || typeof questions.ask !== 'function') return 'unavailable';
+  const approved = approveLabel(to);
+  let answer;
+  try {
+    answer = await questions.ask({
+      questions: [{
+        id: 'gear-upshift',
+        header: '档位升档',
+        question: `模型请求升档 ${from} → ${to}，允许吗？`,
+        detail: reason === '' ? undefined : reason,
+        options: [
+          { label: approved, description: `${GEAR_NAME[to]}；批准后从下一步生效。` },
+          { label: `保持 ${from}`, description: `${GEAR_NAME[from]}；档位不变。` },
+        ],
+      }],
+      agent,
+      signal,
+    });
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null ? error.code : undefined;
+    return code === 'CALLER_NOT_LIVE' || code === 'DELEGATED_CALLER' ? 'unavailable' : 'declined';
+  }
+  const item = Array.isArray(answer?.answers) ? answer.answers.find((entry) => entry.id === 'gear-upshift') : undefined;
+  return item !== undefined && item.selected.length === 1 && item.selected[0] === approved ? 'approved' : 'declined';
+}
+
 /**
  * 挂载档位机制：投影、运行时上下文、`/gear` 命令、`set_gear` 工具、手刹守卫。
  *
@@ -336,7 +376,7 @@ export function apply(ctx) {
         'HARNESS · 实时档位（宿主注入；状态以宿主为准，每次生成、工具调用、调度前重读）',
         `状态：mode=${state.gear}；handbrake=${state.brake ? 'on' : 'off'}；scope=${scopeText(session)}`,
         promptText(prompts, 'ORDER', ORDER_TEXT),
-        '档位工具：set_gear 只允许向上调整（A→D→M→NPR，即降低自治），随时可以拉手刹 H；升档只能由用户在前端档位模块或 /gear 命令完成。',
+        '档位工具：set_gear 向上调整（A→D→M→NPR，即降低自治）直接生效，随时可以拉手刹 H；升档会弹卡片请用户批准，被拒绝就保持原档位、不要重复申请。',
       ];
       if (state.brake) {
         lines.push(`【H 手刹｜已落下】${promptText(prompts, 'BRAKE', BRAKE_TEXT)}（手刹只能由用户放下：前端 H 按钮或 /gear resume）`);
@@ -386,7 +426,7 @@ export function apply(ctx) {
   ctx.tools.register({
     name: 'set_gear',
     description: [
-      '调整本会话的行动档位，或拉下手刹。只能向上调整（降低自治，A→D→M→NPR），不能升档，也不能放下手刹——那是用户的操作。',
+      '调整本会话的行动档位，或拉下手刹。向上调整（降低自治，A→D→M→NPR）直接生效；升档会弹卡片请用户批准，被拒绝就保持原档位、不要重复申请；手刹只有用户能放下。',
       '调用时机：需要更谨慎（D→M-）、出现重复失败/目标含糊/工作面扩大（降档）、需要用户逐步确认，或遇到重大问题要立刻停手（gear="H"）时。',
       '档位含义：M- 每步等确认；M+ 小步连续推进但遇阻即停；D 在 scope 内静默做完全套再汇报；A 按 contract 全自动执行到验收。P/R/NT/NC/NE 都是只读档，同属最低自治级。',
     ].join(' '),
@@ -415,6 +455,7 @@ export function apply(ctx) {
           brake: { type: 'boolean' },
           previous: { type: 'string', enum: GEARS },
           changed: { type: 'boolean' },
+          declined: { type: 'string', enum: GEARS },
         },
         required: ['gear', 'brake', 'previous', 'changed'],
       },
@@ -423,13 +464,15 @@ export function apply(ctx) {
           type: 'text',
           text: value.brake
             ? `手刹已落下：档位停在 ${value.gear}。在用户放下手刹前不要推进任务，也不要调用工具；立即用已有信息汇报现状。`
-            : `档位：${value.previous} → ${value.gear}。`
-              + '该档位的约束从下一步开始生效（宿主提示词已更新）；升档请用户在左侧档位模块或 /gear 中操作。',
+            : value.declined !== undefined
+              ? `用户拒绝升到 ${value.declined}，保持 ${value.gear}。不要重复申请；继续按 ${value.gear} 的约束执行。`
+              : `档位：${value.previous} → ${value.gear}。`
+                + `该档位的约束从下一步开始生效（宿主提示词已更新）。`,
         },
       ],
       presentationMeta: (_args, value) => ({ gearMode: { gear: value.gear, brake: value.brake } }),
     },
-    execute: (args, exec) => {
+    execute: async (args, exec) => {
       const agent = exec.agent;
       if (agent === undefined) throw new Error('set_gear requires a calling agent (no session to switch)');
       const current = gearState(agent.session);
@@ -438,13 +481,26 @@ export function apply(ctx) {
         return { gear: current.gear, brake: true, previous: current.gear, changed: !current.brake };
       }
       if (!GEARS.includes(asked)) throw new Error(`unknown gear "${asked}"`);
-      if (RANK[asked] > RANK[current.gear]) {
-        throw new Error(
-          `set_gear only adjusts upward (toward less autonomy): the session is in ${current.gear} (rank ${RANK[current.gear]}) `
-            + `and ${asked} is rank ${RANK[asked]}. Ask the user to raise the gear from the harness rail or with /gear.`,
-        );
-      }
       if (current.brake) throw new Error('the handbrake is down; only the user can release it');
+      if (RANK[asked] > RANK[current.gear]) {
+        const verdict = await requestUpshift(ctx, {
+          agent,
+          signal: exec.signal,
+          from: current.gear,
+          to: asked,
+          reason: typeof args.reason === 'string' ? args.reason : '',
+        });
+        if (verdict === 'unavailable') {
+          throw new Error(
+            `set_gear only adjusts upward (toward less autonomy): the session is in ${current.gear} (rank ${RANK[current.gear]}) `
+              + `and ${asked} is rank ${RANK[asked]}. Ask the user to raise the gear from the harness rail or with /gear.`,
+          );
+        }
+        if (verdict !== 'approved') {
+          return { gear: current.gear, brake: false, previous: current.gear, changed: false, declined: asked };
+        }
+        return { gear: asked, brake: false, previous: current.gear, changed: true };
+      }
       return { gear: asked, brake: false, previous: current.gear, changed: asked !== current.gear };
     },
     presentCall: (args) => ({

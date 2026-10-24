@@ -2,7 +2,7 @@
 
 > 挂挡真的很爽啊 ！！
 
-**给 DeepSeek Harness 装一列行动档位：对话区左侧滑轨一点即换挡，从「只读规划」到「全自动」，模型只能降不能升，另有一个随时可拉的手刹。**
+**给 DeepSeek Harness 装一列行动档位：对话区左侧滑轨一点即换挡，从「只读规划」到「全自动」，模型想升档得先问你，另有一个随时可拉的手刹。**
 
 ![档位滑轨演示](https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-demo.gif)
 
@@ -11,7 +11,7 @@
 同一个模型、同一句话，"该不该动手"往往取决于当下的意图。`dsh-gear-mode` 把这件事从口头约定变成一个**可点击、可看见、可强制**的状态：
 
 - 换挡即向模型注入该档的行为提示词（与 `sandbox:policy` / `approval:policy` 同一注入机制，每条请求重读）。
-- 模型侧只有一个只能**降档**的 `set_gear` 工具；升档必须由你从界面或 `/gear` 操作。
+- 模型侧只有一个 `set_gear` 工具：**降档**直接生效，**升档**会弹卡片问你，你点了才生效。
 - 手刹 H 落下后，工具调用被**硬拦截**（`ctx.tools.guard`），模型只能汇报现状，不能推进任务。
 - 状态是会话投影，resume / fork 后自动还原。
 
@@ -99,7 +99,7 @@ dsh plugin --profile web add github:Janrilw/dsh-gear-mode
 
 ### 模型侧
 
-- `set_gear({ gear, reason? })`：只能降档或拉手刹；升档会被拒绝并提示"请用户从界面或 `/gear` 操作"。
+- `set_gear({ gear, reason? })`：降档或拉手刹直接生效；升档会弹一张卡片请你批准（`ctx.userQuestions`，与自带 `exit_plan_mode` 同一套机制），你点了「允许」才切档，拒绝就保持原档位，模型不会重试。
 - 注入的上下文同时给出 `mode`、`handbrake`、`scope`（沙箱模式 + 工作区根目录）与当前档位的完整行为要求。
 
 ### 提示词可外置
@@ -126,7 +126,7 @@ dsh plugin --profile web add github:Janrilw/dsh-gear-mode
 
 ## 已知限制
 
-- 模型不能升档，只能降档或拉手刹——这是刻意的设计，升档必须由人操作。
+- 模型升档要经过你批准（弹卡片），没人的场合（子 agent、无 UI 的 profile）退化为直接拒绝。
 - 手刹不中断正在跑的回合（模型需要能把现状汇报出来），它约束的是"不再推进、不再调工具"。
 - 滑轨位置靠测量外壳标记（`[data-shell-overlay]`、`[data-slot="main"]`）得出；若外壳改结构，位置会失准。
 

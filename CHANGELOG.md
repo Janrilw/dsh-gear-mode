@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1 — 2026-10-24 模型升档改成「先问用户」
+
+`set_gear` 升档不再一律硬拒绝，改为用 `ctx.userQuestions` 弹一张卡片请用户裁决（与自带 `exit_plan_mode` 同一套机制）。
+
+| 文件 | 改动 |
+|---|---|
+| `index.js` | 新增 `requestUpshift()`：`ask()` 一张 `id: 'gear-upshift'` 的选择卡，两个选项「允许升到 X」/「保持 Y」，模型给的理由进 `detail` |
+| `index.js` | `set_gear`：升档三分支——批准返回新档位（投影照常提交）；拒绝/关卡片返回 `{gear: 原档, changed: false, declined: X}` 并附「不要重复申请」；没有回答者（子 agent、`CALLER_NOT_LIVE`/`DELEGATED_CALLER`）退回旧硬拒绝 |
+| `index.js` | 手刹检查提到升档之前，手刹落下时不再弹卡片；`output.schema` 加可选 `declined`；`execute` 改 async |
+| `index.js` | 提示词与工具描述同步：「升档会弹卡片请用户批准，被拒绝就保持原档位」 |
+| `README.md` / `docs/ARCHITECTURE.md` | 同步描述与不变量第 4 条，架构文档新增「升档审批」小节 |
+
+仓库内 `package.json` 版本号同步为 `0.1.1`。投影 `stateVersion` 不变（`gearMode` 形状没动）。
+
 ## 0.1.0 — 2026-10-24 首次公开发布准备
 
 从「本地私有目录」变成「可分发插件」的一次性改造。**仓库外的改动也在下面，回滚照抄即可。**

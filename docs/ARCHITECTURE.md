@@ -46,7 +46,19 @@ GEARS = ['P','R','NT','NC','NE','M-','M+','D','A']   // 自治程度从低到高
 RANK  = { P:0, R:0, NT:0, NC:0, NE:0, 'M-':1, 'M+':2, D:3, A:4 }
 ```
 
-`RANK` 是"只能降档"的唯一判据：`set_gear` 只在 `RANK[目标] <= RANK[当前]` 时放行。P/R/N 三组子档同为 0 级——它们都不推进执行，只是说话方式不同，所以互切不算升档。
+`RANK` 是升降档分野的唯一判据：`set_gear` 在 `RANK[目标] <= RANK[当前]` 时直接放行；`RANK[目标] > RANK[当前]` 时走 `requestUpshift` 弹卡片请用户裁决（批准后才返回新档位，投影照常提交）。P/R/N 三组子档同为 0 级——它们都不推进执行，只是说话方式不同，所以互切不算升档。
+
+### 升档审批（`requestUpshift`）
+
+仿自带 `exit_plan_mode` 的做法，用 `ctx.get('userQuestions')` 的 `ask()` 在对话流里弹一张选择卡（`id: 'gear-upshift'`，两个选项：「允许升到 X」/「保持 Y」，模型给的理由进 `detail`）。三种结局：
+
+| 结局 | 触发 | 工具返回 | 提示词 |
+|---|---|---|---|
+| `approved` | 用户点了「允许升到 X」 | `{gear: X, changed: true}` | 下一步换成新档 |
+| `declined` | 点了「保持 Y」/ 关闭卡片 / 本轮中断 | `{gear: 原档, changed: false, declined: X}` | 不变，并告诉模型"不要重复申请" |
+| `unavailable` | 没有 `userQuestions` 服务，或 `CALLER_NOT_LIVE` / `DELEGATED_CALLER`（子 agent、无 UI 的 profile） | 抛错（退回旧的硬拒绝） | 不变 |
+
+投影侧不看 `declined`：`gearMode` 里档位没变，状态就不动。所以"被拒绝"不产生任何持久化痕迹，只体现在工具返回里。
 
 ### 投影状态机
 
@@ -194,7 +206,7 @@ left = Math.round(col.getBoundingClientRect().left - layer.getBoundingClientRect
 1. **状态只有一个真源**：宿主投影。客户端不许自己存档位、不许本地折叠命令。
 2. **客户端只能通过 `/gear` 写**，不直接改投影。
 3. **`__ModuleLoader__.load({ id })` 的 id === package name**。
-4. **升档只能由用户发起**：`/gear` 或滑轨；`set_gear` 被 `RANK` 拦。
+4. **升档要过人这一关**：`/gear` 或滑轨直接切；`set_gear` 升档必须走 `requestUpshift` 拿到用户批准，没有回答者就退回硬拒绝。
 5. **手刹只能由用户解除**：`set_gear` 拒绝解除，唯一路径是 `/gear resume`（或 UI 长按 → `/gear P`）。
 6. **`wire` 形状改动必须递增 `stateVersion`**，否则老会话的投影状态会被新代码误读。
 7. **`viewOf` 要保持引用稳定**，否则每次事件都会引起一次前端重渲染。
