@@ -147,8 +147,6 @@ const REST_MS = 5000;
 const GAP = 8;
 /** 说明栏退场：代码消失后仍留这么久，让 CSS 淡出跑完再卸载。 */
 const TIP_OUT_MS = 320;
-/** 非对话的视图区内容（与对话平级的 tab）：挂上它就说明滑轨该藏。 */
-const NON_CHAT_VIEW = '[data-slot="conversation.trajectory.images"]';
 /** 非对话界面时的内联样式：模块级常量，引用稳定，省一次 diff。 */
 const HIDDEN_STYLE = { display: 'none' };
     /** 档位中心在滑轨内的 y：58 + i*88。 */
@@ -574,25 +572,6 @@ body[data-ds-dark-theme] .dshgear-root {
       const t = props.__gearT;
       const useSessions = props.useSessions;
 
-      /** 主面板（插件 / 自动化任务 / 更多 等）是否正占着主区：非 null 就说明离开了对话。 */
-      const resolvePanel = props.__gearPanel;
-      const panelInfo = typeof resolvePanel === 'function' ? resolvePanel() : resolvePanel;
-      const subscribePanel = React.useCallback(
-        (listener) => (panelInfo?.subscribe instanceof Function ? panelInfo.subscribe(listener) : () => {}),
-        [panelInfo],
-      );
-      const readPanel = React.useCallback(
-        () => (panelInfo?.getSnapshot instanceof Function ? panelInfo.getSnapshot().activePanelId ?? null : null),
-        [panelInfo],
-      );
-      const activePanelId = React.useSyncExternalStore(subscribePanel, readPanel, () => null);
-
-      /**
-       * 轨迹这类与对话平级的视图是否占着视图区。用它们自己的 `data-slot` 锚点
-       * 作正向判据：认不出就当对话，宁可多显示也不误藏（新会话的 hero 屏也靠这条）。
-       */
-      const [nonChatView, setNonChatView] = React.useState(false);
-
       /** 主视图正在显示的会话（mainView 保留计数 > 0 的那一个）。 */
       const mainId = useSessions((state) => {
         for (const id of state.ids) {
@@ -639,6 +618,42 @@ body[data-ds-dark-theme] .dshgear-root {
       /** 交互计数：每次都要重新开始一轮 5 秒静默。 */
       const [pulse, setPulse] = React.useState(0);
 
+      /**
+       * 主面板（插件 / 自动化任务 / 更多等）是否占着主区——只有对话界面才显示滑轨。
+       * 全程容错：服务缺席或读失败一律当作在对话里，判据不会把滑轨搞没。
+       */
+      const [panelOpen, setPanelOpen] = React.useState(false);
+      React.useEffect(() => {
+        let off = null;
+        try {
+          const pi = typeof props.__gearPanel === 'function' ? props.__gearPanel() : undefined;
+          if (pi !== undefined && typeof pi.getSnapshot === 'function' && typeof pi.subscribe === 'function') {
+            const read = () => {
+              try {
+                const snap = pi.getSnapshot();
+                const id = snap === undefined || snap === null ? null : snap.activePanelId ?? null;
+                setPanelOpen(id !== null);
+              } catch {
+                /* 读失败保持原样，不改变显隐 */
+              }
+            };
+            read();
+            const ret = pi.subscribe(read);
+            off = typeof ret === 'function' ? ret : null;
+          }
+        } catch {
+          /* 布局服务缺席：当作一直在对话里 */
+        }
+        return () => {
+          if (off === null) return;
+          try {
+            off();
+          } catch {
+            /* 退订失败不影响显示 */
+          }
+        };
+      }, [props.__gearPanel]);
+
       const rootRef = React.useRef(null);
       const railRef = React.useRef(null);
       const controlRef = React.useRef(null);
@@ -649,6 +664,7 @@ body[data-ds-dark-theme] .dshgear-root {
       const settleTimer = React.useRef(null);
       const armTimer = React.useRef(null);
       const restTimer = React.useRef(null);
+
 
       /** 目前展示的档位：拖拽预览优先，其次是宿主状态。 */
       const shownMain = preview !== null ? preview.group : activeMain;
@@ -735,29 +751,9 @@ body[data-ds-dark-theme] .dshgear-root {
         measure();
         mutations.observe(frame, { attributes: true, childList: true });
         window.addEventListener('resize', measure);
-
-        /**
-         * 视图探针：轨迹等平级视图挂载时，会把对话视图整个换下，只留下自己的锚点。
-         * 只认这个正向信号，认不出的一律按对话处理。
-         */
-        let viewFrame = 0;
-        function readView() {
-          viewFrame = 0;
-          const main = frame.querySelector('[data-slot="main"]');
-          const other = main !== null && main.querySelector(NON_CHAT_VIEW) !== null;
-          setNonChatView((prev) => (prev === other ? prev : other));
-        }
-        const views = new MutationObserver(() => {
-          if (viewFrame === 0) viewFrame = requestAnimationFrame(readView);
-        });
-        readView();
-        views.observe(frame, { childList: true, subtree: true });
-
         return () => {
           resize.disconnect();
           mutations.disconnect();
-          views.disconnect();
-          if (viewFrame !== 0) cancelAnimationFrame(viewFrame);
           window.removeEventListener('resize', measure);
         };
       }, [mainId]);
@@ -1157,12 +1153,8 @@ body[data-ds-dark-theme] .dshgear-root {
             ? branchTopOf(PARENT[tipCode]) + GROUPS[PARENT[tipCode]].indexOf(tipCode) * SUB_H + 19 - 18
             : spotOf(MAIN.indexOf(tipCode)) - 18;
 
-      /**
-       * 滑轨只在「对话」视图里出现：主面板（插件 / 自动化任务 / 更多）占住主区，
-       * 或对话视图被轨迹这类平级视图换下时，整体 `display: none`——瞬间消失、
-       * 瞬间出现，不跑过场，也不重放入场动画。
-       */
-      const hidden = nonChatView || activePanelId !== null;
+      /** 只有对话界面显示滑轨：主面板（插件 / 自动化任务 / 更多）占住主区时整体隐藏。 */
+      const hidden = panelOpen;
       React.useEffect(() => {
         if (!hidden) reveal();
       }, [hidden, reveal]);
@@ -1174,7 +1166,6 @@ body[data-ds-dark-theme] .dshgear-root {
           ref: rootRef,
           style: hidden ? HIDDEN_STYLE : anchorLeft === null ? undefined : { left: `${anchorLeft}px` },
           'data-hidden': hidden ? 'true' : 'false',
-          'aria-hidden': hidden ? 'true' : undefined,
           'data-settled': settled ? 'true' : 'false',
           'data-braked': braked ? 'true' : 'false',
           'data-dragging': dragging ? 'true' : 'false',
@@ -1291,12 +1282,12 @@ body[data-ds-dark-theme] .dshgear-root {
         ctx.effect(() => ctx.locale.register(NS, { zh: ZH, en: EN }), 'gear-mode: rail dictionaries');
         const t = ctx.locale.bind(NS);
         const sessions = ctx.sessions;
-        /** 外壳的主面板选择源（插件 / 自动化任务 / 更多）；渲染时再取，布局服务晚到也能接上。 */
+        /** 外壳的主面板选择源（插件 / 自动化任务 / 更多）；取不到就当一直在对话里。 */
         const panelInfo = () => {
           try {
             return ctx.get('layout')?.panelInfo;
           } catch {
-            return undefined; // 布局服务缺席：当作一直在对话里，宁多显不误藏。
+            return undefined;
           }
         };
         /** 槽位标准属性之外的依赖通过闭包注入，避免滑轨自己去解析服务。 */

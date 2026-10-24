@@ -2,16 +2,17 @@
 
 ## 0.1.2 — 2026-10-24 滑轨只在对话界面出现
 
-侧栏切到插件 / 自动化任务 / 更多，或对话区切到轨迹等平级视图时，滑轨整体隐藏；切回对话立刻出现，不跑过场。
+侧栏切到**插件 / 自动化任务 / 更多**（任何打开主面板的入口）时，滑轨整体隐藏；切回对话立刻出现，不跑过场。
 
 | 文件 | 改动 |
 |---|---|
-| `client.js` | 新增主面板判据：`ctx.get('layout').panelInfo` 的 `activePanelId !== null` 说明主区被别的面板占了 |
-| `client.js` | 新增视图探针：`MutationObserver` + rAF 检查对话视图区里有没有 `[data-slot="conversation.trajectory.images"]`（轨迹视图的锚点） |
-| `client.js` | 隐藏用内联 `display: none`（`HIDDEN_STYLE`），瞬间生效；显隐变化时重新 `reveal()`，不留下淡出状态 |
+| `client.js` | 新增判据：`ctx.get('layout').panelInfo` 的 `activePanelId !== null` 说明主区被别的面板占了，隐藏滑轨 |
+| `client.js` | 隐藏用内联 `display: none`（`HIDDEN_STYLE`），瞬间生效；回到对话时重新 `reveal()`，不停在 5 秒静默的淡出态 |
 | `README.md` / `docs/ARCHITECTURE.md` | 同步说明 |
 
-判据是**正向**的：认不出当前视图就按对话处理，宁可多显示也不误藏——新会话的 hero 屏没有消息列表，靠这条才不会把滑轨藏掉。
+判据**全程容错**：布局服务缺席、形状不对、读快照抛错，一律当作「在对话里」照常显示。显隐只会在读到明确的非 null 面板 id 时发生，判据出问题只会「该藏没藏」，不会把滑轨藏没。
+
+> **轨迹视图没有纳入**：它是对话区内部的 tab（`conversation.view` 的兄弟视图），探针只能靠 DOM 锚点猜，实测不可靠。真有需要时再单独做，宁可先不藏。
 
 ## 0.1.1 — 2026-10-24 模型升档改成「先问用户」
 

@@ -106,7 +106,7 @@ P R N M D A …                              ← ORDER（主列顺序与读档�
 
 优先级：`DSH_GEAR_PROMPTS` → `prompts.local.md` → `prompts.md` → 代码内置 `GEAR_TEXT`。逐节回退：某节缺失或为空 → 用内置那句。
 
-## Client 半边（`client.js`，1307 行）
+## Client 半边（`client.js`，1304 行）
 
 ### Bundle 契约
 
@@ -184,16 +184,23 @@ left = Math.round(col.getBoundingClientRect().left - layer.getBoundingClientRect
 
 ### 显隐门（只在对话界面出现）
 
-滑轨挂在 `shell.overlay`，这一层永远在页面上，所以「只在对话里出现」要靠组件自己判断。两个正向信号，命中任一就 `display: none`：
+滑轨挂在 `shell.overlay`，这一层永远在页面上，所以「只在对话里出现」要靠组件自己判断。判据只有一个：
 
-| 信号 | 读法 | 覆盖 |
-|---|---|---|
-| 主面板被占用 | `ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null`（`useSyncExternalStore` 订阅） | 插件、自动化任务、更多等主面板 |
-| 平级视图挂载 | 视图区里出现 `[data-slot="conversation.trajectory.images"]`（`MutationObserver` + rAF 去抖） | 对话 / 轨迹 这类 tab |
+```js
+ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板占着主区
+```
 
-两条都**只认正向信号**：服务取不到、锚点认不出，一律当对话处理。新会话的 hero 屏没有消息列表、也可能没有视图区，靠这条才不会被误藏。
+`ctx.layout` 是外壳公开的面板服务（官方的 plugin-manager、workspace 也这么读），`activePanelId` 为 `null` 就是对话本身，非 `null` 就是插件 / 自动化任务 / 更多这类主面板。订阅用 `panelInfo.subscribe(read)`，卸载时退订。
+
+判据**全程容错**——这也是被实测教训定出来的：
+
+- 服务缺席、`getSnapshot`/`subscribe` 形状不对、读快照抛错 → 一律当作「在对话里」，滑轨照常显示。
+- 只用 `useState` + `useEffect` 写入显隐，**不在渲染期调用任何未知服务**：渲染期抛错会连带整块 slot 一起挂掉，用户看到的就是「滑轨没了」。
+- 新会话的 hero 屏、无消息会话都走同一条路径，不会被误藏。
 
 隐藏用内联 `display: none`（`HIDDEN_STYLE`，模块级常量保持引用稳定），不跑过场；`hidden` 变回 `false` 时调一次 `reveal()`，避免回来时还停在 5 秒静默的淡出态。`display: none` 不影响锚点测量——量的是 `[data-slot="main"]`，不是滑轨自己。
+
+> **轨迹视图没有纳入**：它是对话区内部的 tab（`conversation.view` 的兄弟视图），只能靠 DOM 锚点猜，实测有假阳性（锚点在对话页也在）。等真有需求时再做，宁可先不藏。
 
 ### CSS 分层
 
