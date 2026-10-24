@@ -141,6 +141,8 @@ dsh plugin --profile web add github:Janrilw/dsh-gear-mode
 
 依赖：Host 侧 `tools`、`systemPrompt`、`sessionProjections`（硬依赖），`commands` 可选；Client 侧 `slots`、`sessions`、`locale`。无第三方依赖，样式只用 `--dsw-alias-*` 主题 token。
 
+更细的分层图、投影状态机、客户端手势节奏、修改指引与坑位清单见 [docs/ARCHITECTURE.md](https://github.com/Janrilw/dsh-gear-mode/blob/main/docs/ARCHITECTURE.md)。
+
 ## 验证记录
 
 在 `web` profile 实测：滑轨渲染与交互、`/gear` 命令、投影 checkpoint、切档后模型自述档位、升档被拒、手刹后工具被拦、位置跟随侧栏、5 秒静默、手刹二次确认与 750ms 解除，均通过。
