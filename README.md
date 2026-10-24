@@ -66,10 +66,24 @@ dsh plugin --profile web add github:Janrilw/dsh-gear-mode
 - **静默淡出**：切档完成或鼠标离开 5 秒后，只剩当前档位的字母、中文与滑块；碰回当前档位才淡入全部内容。
 - **手刹**：点一下 H 进入待落（环在 2.4 秒内填充），再点一下才落下；`Ctrl+Shift+H`（Windows）/ `⌘⇧H`（macOS）走同一条二次确认。落下后**按住 H 750ms** 放下（回到 P）。手刹落下时点任意档位 = 由你解除并切到该档。
 
-![子档位](https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-flyout.png)
-![档位说明](https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-tooltip.png)
-![手刹](https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-brake.png)
-![静默淡出](https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-resting.png)
+<table>
+  <tr>
+    <td align="center"><img src="https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-flyout.png" width="150" alt="子档位"></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-tooltip.png" width="300" alt="档位说明"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>组入口展开子档列</sub></td>
+    <td align="center"><sub>悬停看该档的行为要求</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-brake.png" width="130" alt="手刹"></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/Janrilw/dsh-gear-mode/main/assets/gear-resting.png" width="130" alt="静默淡出"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>手刹落下：整列变淡，H 变红</sub></td>
+    <td align="center"><sub>静默 5 秒：只剩当前档</sub></td>
+  </tr>
+</table>
 
 ### 命令
 
