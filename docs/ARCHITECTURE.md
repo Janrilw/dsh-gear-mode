@@ -37,7 +37,7 @@
 
 > `client.js` 里的中文字典（`ZH`/`EN`）只管**滑轨 UI 文案**（键名、说明、手刹提示），和 `locale/*.json` 的 meta 不是一回事。
 
-## Host 半边（`index.js`，462 行）
+## Host 半边（`index.js`，518 行）
 
 ### 数据模型
 
@@ -106,7 +106,7 @@ P R N M D A …                              ← ORDER（主列顺序与读档�
 
 优先级：`DSH_GEAR_PROMPTS` → `prompts.local.md` → `prompts.md` → 代码内置 `GEAR_TEXT`。逐节回退：某节缺失或为空 → 用内置那句。
 
-## Client 半边（`client.js`，1250 行）
+## Client 半边（`client.js`，1307 行）
 
 ### Bundle 契约
 
@@ -181,6 +181,19 @@ left = Math.round(col.getBoundingClientRect().left - layer.getBoundingClientRect
 ```
 
 只认外壳自己的稳定标记（`[data-shell-overlay]`、`[data-slot="main"]`），**不碰带哈希的类名、不写死像素**。`ResizeObserver` + `MutationObserver` + `window.resize` 三路跟进侧栏拖拽/折叠、右栏开合。
+
+### 显隐门（只在对话界面出现）
+
+滑轨挂在 `shell.overlay`，这一层永远在页面上，所以「只在对话里出现」要靠组件自己判断。两个正向信号，命中任一就 `display: none`：
+
+| 信号 | 读法 | 覆盖 |
+|---|---|---|
+| 主面板被占用 | `ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null`（`useSyncExternalStore` 订阅） | 插件、自动化任务、更多等主面板 |
+| 平级视图挂载 | 视图区里出现 `[data-slot="conversation.trajectory.images"]`（`MutationObserver` + rAF 去抖） | 对话 / 轨迹 这类 tab |
+
+两条都**只认正向信号**：服务取不到、锚点认不出，一律当对话处理。新会话的 hero 屏没有消息列表、也可能没有视图区，靠这条才不会被误藏。
+
+隐藏用内联 `display: none`（`HIDDEN_STYLE`，模块级常量保持引用稳定），不跑过场；`hidden` 变回 `false` 时调一次 `reveal()`，避免回来时还停在 5 秒静默的淡出态。`display: none` 不影响锚点测量——量的是 `[data-slot="main"]`，不是滑轨自己。
 
 ### CSS 分层
 

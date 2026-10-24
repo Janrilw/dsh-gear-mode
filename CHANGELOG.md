@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2 — 2026-10-24 滑轨只在对话界面出现
+
+侧栏切到插件 / 自动化任务 / 更多，或对话区切到轨迹等平级视图时，滑轨整体隐藏；切回对话立刻出现，不跑过场。
+
+| 文件 | 改动 |
+|---|---|
+| `client.js` | 新增主面板判据：`ctx.get('layout').panelInfo` 的 `activePanelId !== null` 说明主区被别的面板占了 |
+| `client.js` | 新增视图探针：`MutationObserver` + rAF 检查对话视图区里有没有 `[data-slot="conversation.trajectory.images"]`（轨迹视图的锚点） |
+| `client.js` | 隐藏用内联 `display: none`（`HIDDEN_STYLE`），瞬间生效；显隐变化时重新 `reveal()`，不留下淡出状态 |
+| `README.md` / `docs/ARCHITECTURE.md` | 同步说明 |
+
+判据是**正向**的：认不出当前视图就按对话处理，宁可多显示也不误藏——新会话的 hero 屏没有消息列表，靠这条才不会把滑轨藏掉。
+
 ## 0.1.1 — 2026-10-24 模型升档改成「先问用户」
 
 `set_gear` 升档不再一律硬拒绝，改为用 `ctx.userQuestions` 弹一张卡片请用户裁决（与自带 `exit_plan_mode` 同一套机制）。
