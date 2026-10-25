@@ -785,6 +785,19 @@ body[data-ds-dark-theme] .dshgear-root {
         setPulse((n) => n + 1);
       }, []);
 
+      /**
+       * 只有对话界面显示滑轨：主面板（插件 / 自动化任务 / 更多）占住主区时整体隐藏。
+       *
+       * 这个 hook 必须留在组件顶层所有 return 之前：`mainId === undefined` 时组件会
+       * 提前 return null，若把 hook 写在那个 return 之后，冷启动（首帧还没会话）会
+       * 少跑一个 hook，等会话回来再渲染就变成 "Rendered more hooks than during the
+       * previous render"（React #310），整个槽位条目被宿主摘掉，档位列整场消失。
+       */
+      const hidden = panelOpen;
+      React.useEffect(() => {
+        if (!hidden) reveal();
+      }, [hidden, reveal]);
+
       /** 5 秒静默：指针不在滑轨区域内时，切档完成 5 秒后淡出到只剩当前档位。 */
       React.useEffect(() => {
         if (restTimer.current !== null) {
@@ -1152,12 +1165,6 @@ body[data-ds-dark-theme] .dshgear-root {
           : PARENT[tipCode] !== undefined
             ? branchTopOf(PARENT[tipCode]) + GROUPS[PARENT[tipCode]].indexOf(tipCode) * SUB_H + 19 - 18
             : spotOf(MAIN.indexOf(tipCode)) - 18;
-
-      /** 只有对话界面显示滑轨：主面板（插件 / 自动化任务 / 更多）占住主区时整体隐藏。 */
-      const hidden = panelOpen;
-      React.useEffect(() => {
-        if (!hidden) reveal();
-      }, [hidden, reveal]);
 
       return h(
         'div',

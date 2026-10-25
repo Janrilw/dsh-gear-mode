@@ -106,7 +106,7 @@ P R N M D A …                              ← ORDER（主列顺序与读档�
 
 优先级：`DSH_GEAR_PROMPTS` → `prompts.local.md` → `prompts.md` → 代码内置 `GEAR_TEXT`。逐节回退：某节缺失或为空 → 用内置那句。
 
-## Client 半边（`client.js`，1304 行）
+## Client 半边（`client.js`，1311 行）
 
 ### Bundle 契约
 
@@ -230,6 +230,7 @@ ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板�
 5. **手刹只能由用户解除**：`set_gear` 拒绝解除，唯一路径是 `/gear resume`（或 UI 长按 → `/gear P`）。
 6. **`wire` 形状改动必须递增 `stateVersion`**，否则老会话的投影状态会被新代码误读。
 7. **`viewOf` 要保持引用稳定**，否则每次事件都会引起一次前端重渲染。
+8. **组件的 hook 必须全部写在任何提前 `return` 之前**。`mainId === undefined` 时会提前 `return null`，hook 排在它后面就会「这次少跑、下次多跑」，React 抛 #310，宿主把整个槽位条目报废（`slot entry crashed in 'shell.overlay'`）——表现为档位列整场消失，只有重启才会重新注册。
 
 ## 改哪里（速查）
 
@@ -251,6 +252,7 @@ ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板�
 - **包名有 5 处**：`package.json`、`cordis.patch.yml`、profile 的 `dependencies`、profile 的 `bundles`、**`client.js` 的 `id`**。前四个漏了报错明显，第五个只表现为"页面空白"。
 - **`dsh plugin --profile desktop …` 会被拒**（`managed exclusively by the Electron application`）；桌面 profile 的 `node_modules` 只能手工维护，且 `pnpm install` 在非 TTY 下会要求 purge 整个 `node_modules`。
 - **`prompts.md` 必须留在 `files` 里**，否则 npm 安装后读不到，静默回落到内置文案。
+- **槽位条目抛错会被静默摘掉**：DSH 的错误边界只把该条目换成崩溃占位，控制台是 `slot entry crashed in '<slot>'`，页面其他部分照常；条目的 `active` 标记会从 `true` 变 `false`（`cordis_inspect_query` 的 `client` / `Slots` / `listSubTree` 能直接看到）。改 `client.js` 后如果滑轨没出现，先查这个标记，别怀疑样式。
 - **`raw.githubusercontent.com` 有 CDN 延迟**：刚推的 README/图，raw 链接可能还是旧版；仓库页面与 API 是新的。
 - **CRLF**：Windows 上 git 会提示 `LF will be replaced by CRLF`，属正常，不要为此加 `.gitattributes` 强行改，除非要跑只认 LF 的 lint。
 - **`client.js` 是单文件产出的**：宿主一个包只发一个 bundle，`client.<name>.js` 这类 chunk 虽然存在，但版本号取的是 `client.js` 的哈希，改 CSS 不同步改它会被 `immutable` 缓存钉死——所以样式只能留在同一个文件里。

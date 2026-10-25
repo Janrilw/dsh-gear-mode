@@ -14,6 +14,17 @@
 
 > **轨迹视图没有纳入**：它是对话区内部的 tab（`conversation.view` 的兄弟视图），探针只能靠 DOM 锚点猜，实测不可靠。真有需要时再单独做，宁可先不藏。
 
+### 同版修复：冷启动滑轨整场消失（React #310）
+
+现象：第一次启动 DeepSeek Harness 时档位列不出现，关掉重开一次才有。
+
+根因：显隐门的 `useEffect` 写在了组件末尾，落在 `mainId === undefined` 的提前 `return null` **之后**。冷启动首帧还没有会话 → 走 null 分支，这次少跑一个 hook；会话恢复后重新渲染 → 多跑一个 hook → React 抛 #310（`Rendered more hooks than during the previous render`）→ 宿主把整个槽位条目报废（`slot entry crashed in 'shell.overlay'`），本进程内不再挂载，只有重启才会重新注册。第二次启动时会话从缓存同步恢复，第一帧就带着 `mainId`，hook 序列恒定，所以不炸。
+
+| 文件 | 改动 |
+|---|---|
+| `client.js` | `hidden` + 显隐 `useEffect` 上移到 `reveal` 之后、提前 `return null` 之前；现在最后一个 hook 在第 952 行、唯一的提前 return 在第 1059 行，hook 序列恒定 |
+| `docs/ARCHITECTURE.md` | 新增不变量第 8 条（hook 必须写在提前 return 之前）+ 坑位「槽位条目抛错会被静默摘掉，看 `active` 标记」 |
+
 ## 0.1.1 — 2026-10-24 模型升档改成「先问用户」
 
 `set_gear` 升档不再一律硬拒绝，改为用 `ctx.userQuestions` 弹一张卡片请用户裁决（与自带 `exit_plan_mode` 同一套机制）。
