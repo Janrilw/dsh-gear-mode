@@ -1,5 +1,7 @@
 # dsh-gear-mode
 
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/janrilw/dsh-gear-mode)
+
 > 挂挡真的很爽啊 ！！
 
 **给 DeepSeek Harness 装一列行动档位：对话区左侧滑轨一点即换挡，从「只读规划」到「全自动」，模型想升档得先问你，另有一个随时可拉的手刹。**
