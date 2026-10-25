@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3 — 2026-10-25 修冷启动丢档位列
+
+0.1.2 在 npm 上这一版带着一个致命 bug：**第一次启动 DeepSeek Harness 时档位列不出现**，关掉重开一次才有。原因见下面 0.1.2 里的「同版修复」——显隐门的 `useEffect` 落在提前 `return null` 之后，冷启动首帧没有会话时少跑一个 hook，会话恢复后多跑一个，React 抛 #310，宿主把 `shell.overlay` 里的条目报废。
+
+| 文件 | 改动 |
+|---|---|
+| `client.js` | `hidden` + 显隐 `useEffect` 上移到 `reveal` 之后、提前 `return null` 之前（1304 → 1311 行） |
+| `docs/ARCHITECTURE.md` | 不变量第 8 条：hook 必须写在任何提前 `return` 之前 |
+| `docs/ARCHITECTURE.md` | 坑位：槽位条目抛错只会被静默摘掉，控制台 `slot entry crashed in '<slot>'`，条目的 `active` 标记变 `false`，可用 `Slots` / `listSubTree` 直查 |
+
 ## 0.1.2 — 2026-10-24 滑轨只在对话界面出现
 
 侧栏切到**插件 / 自动化任务 / 更多**（任何打开主面板的入口）时，滑轨整体隐藏；切回对话立刻出现，不跑过场。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-gear-mode",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "行动档位：P/R/N/M/D/A 六档协作状态，宿主注入提示词 + 左侧档位滑轨 + set_gear 工具与手刹守卫",
   "keywords": [
