@@ -35,6 +35,8 @@ window.__ModuleLoader__.load({
       'error.command': '切档失败',
       'error.noCommand': '宿主没有提供 /gear 命令',
       'error.noSession': '这个会话还没准备好，稍后再试',
+      'notice.subagent': '子会话档位只读（起始 D 档）；请在主会话切档',
+      'tip.subagent': '子会话起始 D 档；滑轨只读，模型可自行降档，不能拉手刹',
       'gear.P': '规划',
       'gear.R': '复盘',
       'gear.N': '交流',
@@ -84,6 +86,8 @@ window.__ModuleLoader__.load({
       'error.command': 'Gear switch failed',
       'error.noCommand': 'The host offers no /gear command',
       'error.noSession': 'This session is not ready yet; retry in a moment',
+      'notice.subagent': 'Subagent gears are read-only (starts at D); switch gears in the main session',
+      'tip.subagent': 'Subagents start at D; this rail is read-only. The model can downshift but cannot engage the handbrake',
       'gear.P': 'Plan',
       'gear.R': 'Review',
       'gear.N': 'Neutral',
@@ -497,6 +501,18 @@ body[data-ds-dark-theme] .dshgear-root {
 }
 .dshgear-tip-mode small { font-size: 15px; font-weight: 400; color: var(--dsw-alias-label-secondary); letter-spacing: 0; }
 .dshgear-tip-desc { margin-top: 7px; }
+.dshgear-tip-lock {
+  margin-top: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+/* —— 子会话：档位槽只读（宿主侧同时拒绝 H 与升档） —— */
+.dshgear-root[data-locked="true"] .dshgear-key,
+.dshgear-root[data-locked="true"] .dshgear-sub,
+.dshgear-root[data-locked="true"] .dshgear-brake { cursor: not-allowed; }
+.dshgear-root[data-locked="true"] .dshgear-brake:not([data-braked="true"]) { opacity: 0.35; }
 .dshgear-toast {
   position: absolute;
   left: 52px;
@@ -583,6 +599,25 @@ body[data-ds-dark-theme] .dshgear-root {
       /** 会话尚未打开绑定时，用列表里带回来的投影缓存兜底。 */
       const cached = useSessions((state) => (mainId === undefined ? undefined : state.projectionsBySession[mainId]));
 
+      /**
+       * 子会话（子智能体）：档位由宿主写成只读，滑轨只显示、不接受切档。
+       *
+       * 两条独立证据互为兜底：列表行直接带 `origin: "subagent"`；持久化的子会话
+       * 视图即使还没进列表，`subagentAddress` 也能认出它的直系父会话。
+       * 这个 hook 必须在 `mainId === undefined` 那个提前 return 之前，见下方说明。
+       */
+      const subagent = useSessions((state) => {
+        if (mainId === undefined) return false;
+        const row = state.byId[mainId];
+        if (row !== undefined && row.origin === 'subagent') return true;
+        try {
+          return typeof sessions.subagentAddress === 'function' && sessions.subagentAddress(mainId) !== undefined;
+        } catch {
+          return false;
+        }
+      });
+      const locked = subagent;
+
       const session = mainId === undefined ? undefined : sessions.binding(mainId)?.session;
       const face = session === undefined ? undefined : session.projections.faceOf('gear');
       const subscribe = React.useCallback(
@@ -595,7 +630,8 @@ body[data-ds-dark-theme] .dshgear-root {
       const snapshot = live ?? cached?.values?.gear ?? undefined;
       const gear = snapshot !== undefined && ALL.includes(snapshot.gear) ? snapshot.gear : undefined;
       const braked = snapshot !== undefined && snapshot.brake === true;
-      const active = gear ?? 'P';
+      // 子会话首帧投影可能还没到：显示宿主的起始档位，而不是主会话的 P。
+      const active = gear ?? (subagent ? 'D' : 'P');
       const activeMain = PARENT[active] ?? active;
       const activeIndex = Math.max(0, MAIN.indexOf(activeMain));
 
@@ -785,6 +821,11 @@ body[data-ds-dark-theme] .dshgear-root {
         setPulse((n) => n + 1);
       }, []);
 
+      /** 只读子会话里的切档尝试：不发命令，只说明原因。 */
+      const rejectLocked = React.useCallback(() => {
+        setNotice(t('notice.subagent'));
+      }, [t]);
+
       /**
        * 只有对话界面显示滑轨：主面板（插件 / 自动化任务 / 更多）占住主区时整体隐藏。
        *
@@ -834,15 +875,28 @@ body[data-ds-dark-theme] .dshgear-root {
       /** 把一条 `/gear` 命令发给宿主；失败时把原因显示出来，不静默吞掉。 */
       const send = React.useCallback(
         (line) => {
-          const face2 = mainId === undefined ? undefined : sessions.binding(mainId)?.session;
-          if (face2 === undefined) {
+          if (locked) {
+            rejectLocked();
+            return;
+          }
+          const target = mainId === undefined ? undefined : sessions.binding(mainId)?.session;
+          if (target === undefined) {
             setNotice(t('error.noSession'));
             return;
           }
-          Promise.resolve(face2.command(line)).then(
+          Promise.resolve(target.command(line)).then(
             (result) => {
               if (result === undefined || !result.ok) {
-                const reason = result !== undefined && !result.ok ? result.error?.message ?? result.error?.code : 'unknown';
+                const error = result !== undefined && !result.ok ? result.error : undefined;
+                // 前端没认出子会话时宿主仍会以 agent-busy 拒绝；翻成同一句人话。
+                const busy = error?.code === 'session/agent-busy'
+                  && (`${error?.message ?? ''}`.includes('subagent routing')
+                    || error?.details?.reason === 'use subagent delivery for this child session');
+                if (busy) {
+                  setNotice(t('notice.subagent'));
+                  return;
+                }
+                const reason = error !== undefined ? error.message ?? error.code : 'unknown';
                 setNotice(`${t('error.command')}: ${reason}`);
                 return;
               }
@@ -851,7 +905,7 @@ body[data-ds-dark-theme] .dshgear-root {
             (error) => setNotice(`${t('error.command')}: ${error instanceof Error ? error.message : String(error)}`),
           );
         },
-        [mainId, sessions, t],
+        [locked, mainId, rejectLocked, sessions, t],
       );
 
       /** 取消手刹的待落状态。 */
@@ -866,15 +920,23 @@ body[data-ds-dark-theme] .dshgear-root {
 
       /** 真正落下手刹。 */
       const engageBrake = React.useCallback(() => {
+        if (locked) {
+          rejectLocked();
+          return;
+        }
         clearArm();
         send('/gear H');
-      }, [clearArm, send]);
+      }, [clearArm, locked, rejectLocked, send]);
 
       /**
        * 手刹要按两次：第一次只进入待落状态（环开始填充），窗口内再按一次才落下。
        * 快捷键与鼠标走同一条路径，避免误触。
        */
       const armBrake = React.useCallback(() => {
+        if (locked) {
+          rejectLocked();
+          return;
+        }
         if (braked) return;
         if (armed) {
           engageBrake();
@@ -888,7 +950,7 @@ body[data-ds-dark-theme] .dshgear-root {
           setArmed(false);
           hideTip();
         }, ARM_MS);
-      }, [armed, braked, engageBrake, showTip, hideTip]);
+      }, [armed, braked, engageBrake, hideTip, locked, rejectLocked, showTip]);
 
       /** 手刹已经落下时，清掉待落状态（比如第一次按下后命令才生效）。 */
       React.useEffect(() => {
@@ -915,13 +977,17 @@ body[data-ds-dark-theme] .dshgear-root {
 
       const request = React.useCallback(
         (code) => {
+          if (locked) {
+            rejectLocked();
+            return;
+          }
           const target = ALL.includes(code) ? code : DEFAULT_SUB[code];
           if (target === undefined) return;
           reveal();
           showTip(target);
           send(`/gear ${target}`);
         },
-        [reveal, send, showTip],
+        [locked, rejectLocked, reveal, send, showTip],
       );
 
       /** 指针路径已在 pointerup 提交；这里只接键盘激活与捕获丢失后的兜底点击。 */
@@ -932,6 +998,10 @@ body[data-ds-dark-theme] .dshgear-root {
 
       /** 手刹：按下即落下，按住 750ms 放下（落回 P）。 */
       const startHold = React.useCallback(() => {
+        if (locked) {
+          rejectLocked();
+          return;
+        }
         if (holdTimer.current !== null) return;
         setHolding(true);
         holdTimer.current = setTimeout(() => {
@@ -939,7 +1009,7 @@ body[data-ds-dark-theme] .dshgear-root {
           setHolding(false);
           send('/gear P');
         }, HOLD_MS);
-      }, [send]);
+      }, [locked, rejectLocked, send]);
 
       const stopHold = React.useCallback(() => {
         setHolding(false);
@@ -990,6 +1060,12 @@ body[data-ds-dark-theme] .dshgear-root {
 
       const onPointerDown = (event) => {
         if (event.button !== 0) return;
+        if (locked) {
+          event.preventDefault();
+          reveal();
+          rejectLocked();
+          return;
+        }
         if (event.target.closest('[data-brake="true"]')) return;
         if (gesture.current !== null) return;
         reveal();
@@ -1084,6 +1160,7 @@ body[data-ds-dark-theme] .dshgear-root {
               'data-active': isActive ? 'true' : 'false',
               'data-preview': isPreview ? 'true' : 'false',
               'aria-pressed': isActive,
+              'aria-disabled': locked ? 'true' : undefined,
               'aria-label': `${code} ${label(t, code)}`,
               onClick: () => clickRequest(code),
               onMouseEnter: () => {
@@ -1136,6 +1213,7 @@ body[data-ds-dark-theme] .dshgear-root {
                   'data-active': active === sub && preview === null ? 'true' : 'false',
                   'data-preview': preview !== null && preview.sub === sub ? 'true' : 'false',
                   'aria-pressed': active === sub,
+                  'aria-disabled': locked ? 'true' : undefined,
                   'aria-label': `${sub} ${label(t, sub)}`,
                   onClick: () => clickRequest(sub),
                   onMouseEnter: () => showTip(sub),
@@ -1176,6 +1254,7 @@ body[data-ds-dark-theme] .dshgear-root {
           'data-settled': settled ? 'true' : 'false',
           'data-braked': braked ? 'true' : 'false',
           'data-dragging': dragging ? 'true' : 'false',
+          'data-locked': locked ? 'true' : 'false',
           'data-resting': resting ? 'true' : 'false',
         },
         h('style', { key: 'css' }, CSS),
@@ -1213,6 +1292,7 @@ body[data-ds-dark-theme] .dshgear-root {
               'data-holding': holding ? 'true' : 'false',
               'data-armed': armed ? 'true' : 'false',
               'aria-pressed': braked,
+              'aria-disabled': locked ? 'true' : undefined,
               'aria-label': braked ? t('brake.release') : armed ? t('brake.armed') : t('brake.engage'),
               title: braked ? t('brake.release') : armed ? t('brake.armed') : t('brake.engage'),
               onPointerDown: (event) => {
@@ -1277,6 +1357,7 @@ body[data-ds-dark-theme] .dshgear-root {
               h('small', null, tipCode === 'H' ? (braked ? t('brake.on') : t('brake.label')) : `${modeName(t, tipCode)} · ${label(t, tipCode)}`),
             ),
             h('div', { key: 'd', className: 'dshgear-tip-desc' }, tipCode === 'H' ? (braked ? t('brake.tip') : armed ? t('brake.armed') : t('brake.engage')) : describe(t, tipCode)),
+            locked ? h('div', { key: 'lock', className: 'dshgear-tip-lock' }, t('tip.subagent')) : null,
           ),
           notice === null ? null : h('div', { key: 'toast', className: 'dshgear-toast', role: 'status' }, notice),
         ),

@@ -12,7 +12,7 @@
                     ┌──────────────── 宿主（index.js）──────────────┴──────┐
                     │ /gear 命令 handler                                  │
                     │      ↓ command/run, command/done                    │
-                    │ gear 会话投影  { gear, brake, running }  ← 唯一真源  │
+                    │ gear 会话投影 { gear, brake, running, subagent } ← 真源 │
                     │      ├── systemPrompt.context('gear:mode') → 模型    │
                     │      ├── tools.guard()  → 手刹时拒绝全部工具调用      │
                     │      └── wire.view → 前端 faceOf('gear') 订阅         │
@@ -37,14 +37,17 @@
 
 > `client.js` 里的中文字典（`ZH`/`EN`）只管**滑轨 UI 文案**（键名、说明、手刹提示），和 `locale/*.json` 的 meta 不是一回事。
 
-## Host 半边（`index.js`，518 行）
+## Host 半边（`index.js`，583 行）
 
 ### 数据模型
 
 ```js
 GEARS = ['P','R','NT','NC','NE','M-','M+','D','A']   // 自治程度从低到高
 RANK  = { P:0, R:0, NT:0, NC:0, NE:0, 'M-':1, 'M+':2, D:3, A:4 }
+SUBAGENT_GEAR = 'D'                                  // 子会话固定起始档
 ```
+
+`SUBAGENT_GEAR` 选 `D` 而不是 `A`：`A` 要求 contract（目标、边界、预算、停止条件），子智能体通常只拿到一段任务简报，直接进 `A` 会先去问契约；`D` 在 scope 内静默做完即可。子会话也**不继承**父会话档位——父会话在 `P`，子智能体仍要从 `D` 起步，否则 delegation 就没意义了。
 
 `RANK` 是升降档分野的唯一判据：`set_gear` 在 `RANK[目标] <= RANK[当前]` 时直接放行；`RANK[目标] > RANK[当前]` 时走 `requestUpshift` 弹卡片请用户裁决（批准后才返回新档位，投影照常提交）。P/R/N 三组子档同为 0 级——它们都不推进执行，只是说话方式不同，所以互切不算升档。
 
@@ -60,42 +63,62 @@ RANK  = { P:0, R:0, NT:0, NC:0, NE:0, 'M-':1, 'M+':2, D:3, A:4 }
 
 投影侧不看 `declined`：`gearMode` 里档位没变，状态就不动。所以"被拒绝"不产生任何持久化痕迹，只体现在工具返回里。
 
+### 子会话（子智能体）
+
+判据只有一个：`session.header.origin === 'subagent'`（`isSubagentSession()`）。子会话的四条规矩：
+
+| 规矩 | 实现 |
+|---|---|
+| 起始 `D`，不继承父档 | `init(header, inheritedEventCount)` 按 `header.origin` 选 `SUBAGENT_GEAR` 或 `'P'` |
+| 不折叠继承前缀 | `init` 把 `inheritedEventCount` 记进 `state.inherited`；`apply` 对 `event.seq < state.inherited` 直接返回原状态 |
+| 永远不落手刹 | `clampBrake()`：`command/done` 与 `tool/result` 两条提交路径都把 `brake` 强制成 `false` |
+| 不能升档、不能拉 H | `set_gear` 里 `H` 直接抛错；`RANK[目标] > RANK[当前]` 时不弹卡片、直接抛错；`/gear H` 返回错误文案 |
+
+为什么必须跳过继承前缀：子会话折叠自家日志时会先扫到从父会话复制过来的事件。不跳过的话，父会话上一轮的 `A` 甚至落下的 `H` 会原样压到子会话头上——后者更致命：子会话没有用户可以解除手刹，`tools.guard` 会把它永久锁死。
+
+为什么不弹升档卡片：`requestUpshift` 的 `userQuestions.ask({ agent })` 在子会话里会以 `DELEGATED_CALLER` / `CALLER_NOT_LIVE` 失败，原来的写法是"等不到人再硬拒绝"；现在提前短路，避免请求挂到主会话的用户面前。
+
+`stateVersion: 2` 让旧检查点失效并整体重折；`stateSchema` 对 `subagent`/`inherited` 只做可选校验，所以内存里残留的 v1 状态也不会炸。
+
 ### 投影状态机
 
-状态形状 `{ gear, brake, running }`，`init` 是 `{ gear:'P', brake:false, running:null }`。
+状态形状 `{ gear, brake, running, subagent, inherited }`；`init(header, inheritedEventCount)` 是主会话 `{ gear:'P', brake:false, running:null, subagent:false, inherited }`，子会话 `{ gear:'D', … , subagent:true, inherited }`。
 
 | 事件 | 条件 | 结果 |
 |---|---|---|
+| 任意 | `state.subagent === true` 且 `event.seq < state.inherited` | 原状态；继承前缀不改子会话档位 |
 | `command/run` | `data.name === 'gear'` 且参数可解析 | 挂起 `running = { commandId, next }`，**状态不动** |
-| `command/done` | `commandId` 对得上且 `kind === 'success'` | 提交 `running.next`，清 `running` |
+| `command/done` | `commandId` 对得上且 `kind === 'success'` | 提交 `running.next`（子会话的 `brake` 被钳成 `false`），清 `running` |
 | `command/done` | `commandId` 对得上但失败 | 只清 `running`，状态不动 |
-| `tool/result` | `meta.gearMode` 是合法 `{gear,brake}` | 直接采纳（`set_gear` 的自述回执） |
+| `tool/result` | `meta.gearMode` 是合法 `{gear,brake}` | 直接采纳（`set_gear` 的自述回执），子会话钳掉 `brake` |
+
+提交分支全部用 `{ ...state, … }` 展开：`subagent` / `inherited` 必须原样带过去，否则下一次 `apply` 就丢了判据。
 
 **为什么要有 `running`**：`command/run` 先到、handler 在中间执行、`command/done` 后到。handler 读状态时仍应看到旧档位，`done` 之后才提交——切档因此是原子的，不会出现"命令执行到一半状态就变了"。
 
 投影**不新增会话事件类型**，只折叠既有事件，所以 resume / fork 后自动还原，不需要迁移。
 
-`wire` 只暴露 `{ gear, brake }`（不含 `running`）；`viewOf` 用 `WeakMap` 按 state 对象缓存，未变化时引用稳定，避免前端被无谓唤醒。
+`wire` 只暴露 `{ gear, brake }`（不含 `running` / `subagent` / `inherited`）；子会话的只读判据走会话元数据（列表行 `origin` 或 `sessions.subagentAddress()`），不塞进 wire。`viewOf` 用 `WeakMap` 按 state 对象缓存，未变化时引用稳定，避免前端被无谓唤醒。
 
 ### 四个出口
 
 | 出口 | 代码 | 作用 |
 |---|---|---|
 | 提示词 | `systemPrompt.context({ name:'gear:mode', order: getContextOrder('APPROVAL_POLICY') })` | 与 `sandbox:policy` 同机制，每条请求重读 |
-| 用户命令 | `commands.register({ name:'gear' })` | `/gear P` / `/gear H` / `/gear resume` / `/gear`（报告） |
-| 模型工具 | `tools.register({ name:'set_gear' })` | 只降档 + 只拉手刹；`presentationMeta` 回传 `gearMode` 给投影 |
+| 用户命令 | `commands.register({ name:'gear' })` | `/gear P` / `/gear H` / `/gear resume` / `/gear`（报告）；子会话里 `/gear H` 报错 |
+| 模型工具 | `tools.register({ name:'set_gear' })` | 降档直接生效；升档弹卡片；H 直接落手刹（子会话拒绝 H 与升档）；`presentationMeta` 回传 `gearMode` 给投影 |
 | 手刹守卫 | `tools.guard(exec)` | `brake === true` 时返回拒绝理由，拦下**全部**工具调用 |
 
-注入文本由 `text(context)` 现场拼装，固定六段（后两段按状态出现）：
+注入文本由 `text(context)` 现场拼装，固定六段（后两段按状态出现）；子会话把第 4 段换成只读说明，且不出现最后一段：
 
 ```
 HARNESS · 实时档位（…）                      ← 标题
 状态：mode=P；handbrake=off；scope=sandbox:…  ← 实时状态
 P R N M D A …                              ← ORDER（主列顺序与读档纪律）
-档位工具：set_gear 只允许向上调整…             ← 工具规则
+档位工具：set_gear 只允许向上调整…             ← 工具规则（子会话：起始 D / 只读 / 不能 H 或升档）
 【H 手刹…】…                                ← 仅 brake=true 时
 【当前档位 P｜只读规划】…                      ← 该档正文
-【H 手刹】随时可拉…                           ← 仅 brake=false 时
+【H 手刹】随时可拉…                           ← 仅 brake=false 且非子会话时
 ```
 
 `scope` 来自 `ctx.get('sandboxPolicy').resolve({ session })`，拿不到就写"宿主未暴露沙箱范围"——**不假装知道**。
@@ -106,7 +129,7 @@ P R N M D A …                              ← ORDER（主列顺序与读档�
 
 优先级：`DSH_GEAR_PROMPTS` → `prompts.local.md` → `prompts.md` → 代码内置 `GEAR_TEXT`。逐节回退：某节缺失或为空 → 用内置那句。
 
-## Client 半边（`client.js`，1311 行）
+## Client 半边（`client.js`，1392 行）
 
 ### Bundle 契约
 
@@ -137,6 +160,21 @@ sessions.binding(mainId)?.session.projections.faceOf('gear')
 
 组件里没有"本地档位"变量。**所有显示都从宿主快照推导**，所以刷新、多标签、模型自己 `set_gear`，界面永远一致。
 
+### 只读判据（子会话）
+
+```js
+const subagent = useSessions((state) => {
+  if (mainId === undefined) return false;
+  if (state.byId[mainId]?.origin === 'subagent') return true;      // 列表行
+  return sessions.subagentAddress(mainId) !== undefined;           // 持久化子视图兜底
+});
+const locked = subagent;
+```
+
+两条证据互为兜底：列表行直接带 `origin: "subagent"`；还没进列表的持久化子视图，`sessions.subagentAddress(id)`（宿主 facade 上的公开方法）也能靠 `subagentCatalog` / summary 反推父会话。**不要**用 `session.command` 的报错来反推——那是最后一道兜底（`send` 里把 `session/agent-busy` + `subagent routing` 翻成同一句提示）。
+
+`locked` 之后：`send` / `request` / `engageBrake` / `armBrake` / `startHold` / `onPointerDown` / `Ctrl+Shift+H` 全部在发命令前返回，只弹 `notice.subagent`。渲染侧加 `data-locked`，悬停说明栏追加一行 `tip.subagent`。
+
 ### 写：只发命令
 
 ```js
@@ -158,8 +196,9 @@ session.command('/gear P')    // 长按 H 750ms 解除并回 P
 | `resting` | 5 秒静默后只留当前档 |
 | `inside` | 指针是否在控件内（决定是否唤醒） |
 | `anchorLeft` | 量出来的左偏移（像素由 DOM 决定，不写死） |
-| `notice` | 命令失败的 toast |
+| `notice` | 命令失败的 toast（子会话只读时也走这里） |
 | `gesture` `suppress` `*Timer` `spotRef` | 手势与计时器句柄，避免重渲染丢状态 |
+| `subagent` / `locked` | 子会话只读判据（`useSessions` 派生，不落在本地 state 里） |
 
 ### 交互节奏
 
@@ -171,6 +210,7 @@ session.command('/gear P')    // 长按 H 750ms 解除并回 P
 | 手刹落下 | 两次触发（点击两次 / `Ctrl+Shift+H` 两次），窗口 `ARM_MS`(2400ms) |
 | 手刹解除 | 按住 H `HOLD_MS`(750ms)，进度环画满后发 `/gear P` |
 | 静默 | 切档或指针离开 `REST_MS`(5000ms) 后只剩当前档；碰回当前档唤醒 |
+| 子会话 | 滑轨只读：点击/拖拽/手刹/快捷键都不发命令，只弹「子会话档位只读（起始 D 档）」；档位仍随宿主变化（模型可自行降档） |
 
 ### 锚点测量
 
@@ -206,7 +246,7 @@ ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板�
 
 1. **主题变量**：`.dshgear-root` 上定义 `--dshgear-dot` / `--dshgear-pane-bg` / `--dshgear-pane-ring` / `--dshgear-pane-shadow` / `--dshgear-key-raised`；`body[data-ds-dark-theme] .dshgear-root` 覆盖成深色值。**这是浅色/深色唯一开关**，别再散写 `rgba(255,255,255,…)`。
 2. **结构**：rail（玻璃底板）→ dots（点阵，用 `mask-image` 围绕 `--dshgear-spot` 聚焦）→ thumb（滑动高亮）→ key（字母）→ cn（中文小标签）→ flyout（子档列，`left:46px` 紧贴）→ sub → brake。
-3. **状态**：全部走 `data-*`（`data-active` `data-preview` `data-open` `data-armed` `data-braked` `data-resting` `data-settled` `data-dragging`），JS 只改属性不拼样式。
+3. **状态**：全部走 `data-*`（`data-active` `data-preview` `data-open` `data-armed` `data-braked` `data-resting` `data-settled` `data-dragging` `data-locked`），JS 只改属性不拼样式。`data-locked` 加在 `.dshgear-root` 上，配 `.dshgear-tip-lock` 说明行与 `cursor: not-allowed`。
 
 几何常量在文件顶部（`RAIL_H=556` `KEY_H=88` `SUB_H=38` `THUMB_W/H=36/44`…），CSS 里的尺寸由模板字符串插入，改一处即可。
 
@@ -226,11 +266,13 @@ ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板�
 1. **状态只有一个真源**：宿主投影。客户端不许自己存档位、不许本地折叠命令。
 2. **客户端只能通过 `/gear` 写**，不直接改投影。
 3. **`__ModuleLoader__.load({ id })` 的 id === package name**。
-4. **升档要过人这一关**：`/gear` 或滑轨直接切；`set_gear` 升档必须走 `requestUpshift` 拿到用户批准，没有回答者就退回硬拒绝。
-5. **手刹只能由用户解除**：`set_gear` 拒绝解除，唯一路径是 `/gear resume`（或 UI 长按 → `/gear P`）。
+4. **升档要过人这一关**：`/gear` 或滑轨直接切；`set_gear` 升档必须走 `requestUpshift` 拿到用户批准，没有回答者就退回硬拒绝；子会话没有回答者，直接拒绝、不弹卡片。
+5. **手刹只能由用户解除**：`set_gear` 拒绝解除，唯一路径是 `/gear resume`（或 UI 长按 → `/gear P`）；子会话永远不落手刹（投影钳制 + 工具拒绝）。
 6. **`wire` 形状改动必须递增 `stateVersion`**，否则老会话的投影状态会被新代码误读。
 7. **`viewOf` 要保持引用稳定**，否则每次事件都会引起一次前端重渲染。
 8. **组件的 hook 必须全部写在任何提前 `return` 之前**。`mainId === undefined` 时会提前 `return null`，hook 排在它后面就会「这次少跑、下次多跑」，React 抛 #310，宿主把整个槽位条目报废（`slot entry crashed in 'shell.overlay'`）——表现为档位列整场消失，只有重启才会重新注册。
+9. **子会话的只读边界在宿主，不在前端**：前端 `data-locked` 只是体验；真正的边界是「起始 D + 跳过继承前缀 + `brake` 钳制 + `set_gear`/`/gear` 拒绝 H 与升档」。别只改前端就以为修好了。
+10. **提交分支必须展开旧状态**（`{ ...state, … }`）：`subagent` / `inherited` 丢了，下一次 `apply` 的继承守卫就失效。
 
 ## 改哪里（速查）
 
@@ -243,6 +285,7 @@ ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板�
 | 滑轨尺寸/节奏 | `client.js` 顶部常量 + CSS 里的模板插入 |
 | 浅色/深色观感 | `.dshgear-root` 与 `body[data-ds-dark-theme] .dshgear-root` 两组变量 |
 | 手刹规则 | `client.js`：`pressBrake` / `stopHold`、`ARM_MS` / `HOLD_MS`；宿主：`tools.guard` |
+| 子会话只读 | 宿主：`SUBAGENT_GEAR`、`init`/`apply` 的 `inherited` 守卫、`clampBrake`、`set_gear` 的 `isSubagentSession` 分支；前端：`subagent` 判据 + `locked` 守卫 + `data-locked` |
 | 工具描述 | `index.js` 的 `tools.register({ description, parameters })` |
 | 挂在别的位置 | 测量 effect（`[data-slot="main"]`）+ `GAP` |
 | 市场展示图 | `screenshots.json` + `assets/` |
@@ -255,6 +298,7 @@ ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板�
 - **槽位条目抛错会被静默摘掉**：DSH 的错误边界只把该条目换成崩溃占位，控制台是 `slot entry crashed in '<slot>'`，页面其他部分照常；条目的 `active` 标记会从 `true` 变 `false`（`cordis_inspect_query` 的 `client` / `Slots` / `listSubTree` 能直接看到）。改 `client.js` 后如果滑轨没出现，先查这个标记，别怀疑样式。
 - **`raw.githubusercontent.com` 有 CDN 延迟**：刚推的 README/图，raw 链接可能还是旧版；仓库页面与 API 是新的。
 - **CRLF**：Windows 上 git 会提示 `LF will be replaced by CRLF`，属正常，不要为此加 `.gitattributes` 强行改，除非要跑只认 LF 的 lint。
+- **子会话里 slash 命令是被宿主关掉的**：`CommandDirectory` 对 `sessions.subagentAddress(id) !== undefined` 的会话直接返回 `[]`，`remote.commands.execute` 也会以 `session/agent-busy` 拒绝（`resolveAgent` 不走 subagent delivery）。所以子会话的滑轨只能做成只读——想在前端点档位，宿主根本不会执行 `/gear`。
 - **`client.js` 是单文件产出的**：宿主一个包只发一个 bundle，`client.<name>.js` 这类 chunk 虽然存在，但版本号取的是 `client.js` 的哈希，改 CSS 不同步改它会被 `immutable` 缓存钉死——所以样式只能留在同一个文件里。
 
 ## 本地验证
@@ -263,13 +307,16 @@ ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板�
 # 1. 语法
 node --check index.js && node --check client.js
 
-# 2. 装配（CLI profile 才能 dump）
+# 2. 投影单测（node:test，无第三方依赖）
+npm test
+
+# 3. 装配（CLI profile 才能 dump）
 dsh --profile web --dump-config | grep -A2 gear-mode
 
-# 3. 真跑（另开一个 profile，别动正在用的）
+# 4. 真跑（另开一个 profile，别动正在用的）
 dsh --profile web --port 5999 --no-open
 
-# 4. 打包内容
+# 5. 打包内容
 npm pack --dry-run
 ```
 

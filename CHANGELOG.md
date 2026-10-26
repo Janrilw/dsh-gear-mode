@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.4 — 2026-10-26 子会话自动 D 档，档位槽只读
+
+修一个长期 bug：在子智能体（subagent）会话里点档位会报 `切档失败: session … is owned by subagent routing`。根因不在前端——宿主的 `CommandDirectory` 对子会话直接返回空，`remote.commands.execute` 的 `resolveAgent` 也不走 subagent delivery，所以子会话根本无法执行 `/gear`。按「子会话自动给 D 档、档位槽只读」重做：
+
+| 文件 | 改动 |
+|---|---|
+| `index.js` | 投影升到 `stateVersion: 2`：`init(header, inheritedEventCount)` 按 `header.origin` 起始 P / D；状态增加 `subagent`、`inherited`；子会话跳过继承前缀、`brake` 强制 `false`；提交分支改用 `{ ...state }` 保留字段 |
+| `index.js` | `set_gear`：子会话 `H` 直接抛错；升档不弹卡片、直接抛错；`/gear H` 在子会话里返回错误 |
+| `index.js` | 注入提示词：子会话第 4 段换成只读说明，且不出现「随时可拉手刹」段 |
+| `client.js` | `useSessions` 判子会话（列表 `origin` + `sessions.subagentAddress`），`locked` 后 `send` / `request` / 手刹 / 拖拽 / `Ctrl+Shift+H` 全部拦截，只弹说明 |
+| `client.js` | 新增 `data-locked`、`.dshgear-tip-lock`、`notice.subagent` / `tip.subagent`（zh/en）；把 `session/agent-busy` + `subagent routing` 翻成人话 |
+| `test/gear-projection.test.mjs` | 新增 12 项投影单测（`npm test`） |
+| `docs/ARCHITECTURE.md` / `README.md` | 子会话语义、只读判据、坑位与验证步骤 |
+| `package.json` | 0.1.4 + `scripts.test` |
+
+行为矩阵：
+
+| 会话 | 起始档 | 滑轨 | `set_gear` | `/gear` |
+|---|---|---|---|---|
+| 主会话 | P | 可切 | 原规则（升档弹卡片） | 原规则 |
+| 普通 fork | 继承父档 | 可切 | 原规则 | 原规则 |
+| 子智能体 | D（不继承） | 只读 | 可降档；H 与升档报错 | 宿主不可用；H 报错 |
+
+子会话里模型自行降档后，滑轨显示当前档位（如 `M-`），仍只读。
+
+> **为什么不给子会话 A**：`A` 要求 contract（目标、边界、预算、停止条件），子智能体通常只拿到一段任务简报，直接进 `A` 会先去问契约。`D` 在 scope 内静默做完即可。
+>
+> **为什么不是「继承父档」**：父会话在 `P` 时子智能体也要能干活，否则 delegation 没意义。
+>
+> **降档后的子会话无法自己升回去**：没有用户可批准。这是有意的——要更高自治，回到主会话再说。
+
 ## 0.1.3 — 2026-10-25 修冷启动丢档位列
 
 0.1.2 在 npm 上这一版带着一个致命 bug：**第一次启动 DeepSeek Harness 时档位列不出现**，关掉重开一次才有。原因见下面 0.1.2 里的「同版修复」——显隐门的 `useEffect` 落在提前 `return null` 之后，冷启动首帧没有会话时少跑一个 hook，会话恢复后多跑一个，React 抛 #310，宿主把 `shell.overlay` 里的条目报废。
