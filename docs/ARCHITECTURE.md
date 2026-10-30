@@ -37,7 +37,7 @@
 
 > `client.js` 里的中文字典（`ZH`/`EN`）只管**滑轨 UI 文案**（键名、说明、手刹提示），和 `locale/*.json` 的 meta 不是一回事。
 
-## Host 半边（`index.js`，583 行）
+## Host 半边（`index.js`，709 行）
 
 ### 数据模型
 
@@ -78,15 +78,17 @@ SUBAGENT_GEAR = 'D'                                  // 子会话固定起始档
 
 为什么不弹升档卡片：`requestUpshift` 的 `userQuestions.ask({ agent })` 在子会话里会以 `DELEGATED_CALLER` / `CALLER_NOT_LIVE` 失败，原来的写法是"等不到人再硬拒绝"；现在提前短路，避免请求挂到主会话的用户面前。
 
-`stateVersion: 2` 让旧检查点失效并整体重折；`stateSchema` 对 `subagent`/`inherited` 只做可选校验，所以内存里残留的 v1 状态也不会炸。
+`stateVersion: 4` 让旧检查点失效并整体重折（0.2.0 开发期 3 号形状短暂带过 `upshifts` 字段，升版本强制弃掉）；`stateSchema` 对 `subagent`/`inherited`/`briefed` 只做可选校验，所以内存里残留的旧状态也不会炸。
 
 ### 投影状态机
 
-状态形状 `{ gear, brake, running, subagent, inherited }`；`init(header, inheritedEventCount)` 是主会话 `{ gear:'P', brake:false, running:null, subagent:false, inherited }`，子会话 `{ gear:'D', … , subagent:true, inherited }`。
+状态形状 `{ gear, brake, running, subagent, inherited, briefed }`；`init(header, inheritedEventCount)` 是主会话 `{ gear:'P', brake:false, running:null, subagent:false, inherited:0, briefed:false }`，子会话 `{ gear:'D', … , subagent:true, inherited }`。`briefed` 记录完整介绍是否已注入。
 
 | 事件 | 条件 | 结果 |
 |---|---|---|
 | 任意 | `state.subagent === true` 且 `event.seq < state.inherited` | 原状态；继承前缀不改子会话档位 |
+| `user/message` | `data.source.kind === 'runtime-context'` | `briefed = true`（完整介绍已随首条请求注入过） |
+| `tool/result` / `tool/ptc-dispatch` | `meta.gearMode` 是合法 `{gear,brake}`（PTC 分支还要求 `name === 'set_gear'`） | 直接采纳，提交档位。**PTC 会话里模型工具经 run_code 嵌套派发，没有 tool/call / tool/result 事件**，`meta.gearMode` 挂在 `tool/ptc-dispatch` 上——漏折它滑轨就不跟随（0.1.x 的滑轨不跟随 bug 正是这一条） |
 | `command/run` | `data.name === 'gear'` 且参数可解析 | 挂起 `running = { commandId, next }`，**状态不动** |
 | `command/done` | `commandId` 对得上且 `kind === 'success'` | 提交 `running.next`（子会话的 `brake` 被钳成 `false`），清 `running` |
 | `command/done` | `commandId` 对得上但失败 | 只清 `running`，状态不动 |
@@ -100,26 +102,44 @@ SUBAGENT_GEAR = 'D'                                  // 子会话固定起始档
 
 `wire` 只暴露 `{ gear, brake }`（不含 `running` / `subagent` / `inherited`）；子会话的只读判据走会话元数据（列表行 `origin` 或 `sessions.subagentAddress()`），不塞进 wire。`viewOf` 用 `WeakMap` 按 state 对象缓存，未变化时引用稳定，避免前端被无谓唤醒。
 
-### 四个出口
+### 五个出口
 
 | 出口 | 代码 | 作用 |
 |---|---|---|
-| 提示词 | `systemPrompt.context({ name:'gear:mode', order: getContextOrder('APPROVAL_POLICY') })` | 与 `sandbox:policy` 同机制，每条请求重读 |
+| 提示词 | `systemPrompt.context({ name:'gear:mode', order: getContextOrder('APPROVAL_POLICY') })` | 首条请求注入完整介绍（一次）；之后每条请求只带一行实时状态 |
+| 换挡通知 | `agent.steer` / `agent.inject` | 换挡真正生效时注入一次【档位切换】通知（从什么档位换到什么档位 + 新档位行为要求）；回合中用 `steer`，空闲用 `inject` 只入队不唤醒 |
 | 用户命令 | `commands.register({ name:'gear' })` | `/gear P` / `/gear H` / `/gear resume` / `/gear`（报告）；子会话里 `/gear H` 报错 |
 | 模型工具 | `tools.register({ name:'set_gear' })` | 降档直接生效；升档弹卡片；H 直接落手刹（子会话拒绝 H 与升档）；`presentationMeta` 回传 `gearMode` 给投影 |
 | 手刹守卫 | `tools.guard(exec)` | `brake === true` 时返回拒绝理由，拦下**全部**工具调用 |
 
-注入文本由 `text(context)` 现场拼装，固定六段（后两段按状态出现）；子会话把第 4 段换成只读说明，且不出现最后一段：
+注入文本由 `text(context)` 按会话阶段分两种形态：
+
+**首条请求（briefed=false）——完整介绍，只出现一次**（子会话多一段只读说明）：
 
 ```
-HARNESS · 实时档位（…）                      ← 标题
-状态：mode=P；handbrake=off；scope=sandbox:…  ← 实时状态
-P R N M D A …                              ← ORDER（主列顺序与读档纪律）
-档位工具：set_gear 只允许向上调整…             ← 工具规则（子会话：起始 D / 只读 / 不能 H 或升档）
-【H 手刹…】…                                ← 仅 brake=true 时
+HARNESS · 行动档位 · 完整介绍（…）            ← 标题
+<INTRO 正文：档位列 / 换挡规则 / 手刹>          ← INTRO（可被 prompts.md 的 ## INTRO 覆盖）
+【子会话】…                                ← 仅子会话
 【当前档位 P｜只读规划】…                      ← 该档正文
-【H 手刹】随时可拉…                           ← 仅 brake=false 且非子会话时
 ```
+
+**之后每条请求（briefed=true）——一行实时状态：**
+
+```
+HARNESS · 档位：P（只读规划）；handbrake=off；scope=sandbox:…；行为要求以最新一条【档位切换】通知为准
+【H 手刹｜已落下】…                          ← 仅 brake=true 时
+```
+
+`briefed` 是投影状态：折叠到第一条 `source.kind === 'runtime-context'` 的用户消息（宿主把运行时上下文写进会话日志的那条）时置 true，之后不再注入介绍。resume / fork 重放日志自动恢复；子会话跳过继承前缀，第一条请求重新拿一份完整介绍；compaction 若折叠掉旧上下文消息，重折后介绍会自然补上。
+
+每次换挡还会有一条**换挡通知**（不经 `systemPrompt.context`，走 `agent.steer/inject`）：
+
+```
+【档位切换】P（只读规划）→ D（自动执行）
+【当前档位 D｜自动执行】<该档正文>
+```
+
+手刹的拉起/放下走同一通道（正文换成 BRAKE）。通知由 `gearNoticeText()` 拼装、`deliverGearNotice()` 投递；回合进行中 `steer`（最近一步送达），空闲 `inject`（只入队不唤醒）。
 
 `scope` 来自 `ctx.get('sandboxPolicy').resolve({ session })`，拿不到就写"宿主未暴露沙箱范围"——**不假装知道**。
 
@@ -127,7 +147,7 @@ P R N M D A …                              ← ORDER（主列顺序与读档�
 
 `loadPrompts()` 每次调用都读文件，按 `"路径\0全文"` 做 stamp 判等；改一个字才重解析，所以"保存即生效"且几乎没有 IO 代价。
 
-优先级：`DSH_GEAR_PROMPTS` → `prompts.local.md` → `prompts.md` → 代码内置 `GEAR_TEXT`。逐节回退：某节缺失或为空 → 用内置那句。
+优先级：`DSH_GEAR_PROMPTS` → `prompts.local.md` → `prompts.md` → 代码内置 `INTRO_TEXT` / `GEAR_TEXT` / `BRAKE_TEXT`。逐节回退：某节缺失或为空 → 用内置那句。`INTRO` 段只随首条请求注入一次，各档段随换挡通知注入；键 `ORDER` 已由 `INTRO` 取代（外部旧文件里的 `## ORDER` 会被忽略）。
 
 ## Client 半边（`client.js`，1392 行）
 
@@ -253,12 +273,12 @@ ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板�
 ## 一次切档的完整时序
 
 1. 用户点 `N`（组入口）→ 组件把 `preview` 指到 `NT`，发 `/gear NT`
-2. 宿主 `commands` handler 读当前状态，返回 `{ kind:'success', text:'P｜只读规划 → NT｜纯聊天' }`
+2. 宿主 `commands` handler 读当前状态，先注入一条换挡通知（`agent.status === 'running'` 用 `steer`，空闲用 `inject` 只入队不唤醒），再返回 `{ kind:'success', text:'P｜只读规划 → NT｜纯聊天' }`
 3. 投影收到 `command/run`：挂起 `running.next = { gear:'NT', brake:false }`
 4. `command/done` 成功 → 提交状态，`running` 清空
 5. `wire.view` 生成新 `{gear,brake}`，经 `face` 广播
 6. 前端 `useSyncExternalStore` 拿到新快照 → 高亮、中文标签、说明栏全部跟着变
-7. 下一次模型请求：`systemPrompt.context` 重新拼装，注入新的档位正文
+7. 模型下一次进入步骤时：收件箱里的换挡通知被采纳（含新档位正文），运行时上下文只带一行实时状态
 8. 若手刹落下：`tools.guard` 从下一次工具调用起返回拒绝理由
 
 ## 不变量（改动时别破坏）
@@ -273,6 +293,9 @@ ctx.get('layout').panelInfo.getSnapshot().activePanelId !== null   // 主面板�
 8. **组件的 hook 必须全部写在任何提前 `return` 之前**。`mainId === undefined` 时会提前 `return null`，hook 排在它后面就会「这次少跑、下次多跑」，React 抛 #310，宿主把整个槽位条目报废（`slot entry crashed in 'shell.overlay'`）——表现为档位列整场消失，只有重启才会重新注册。
 9. **子会话的只读边界在宿主，不在前端**：前端 `data-locked` 只是体验；真正的边界是「起始 D + 跳过继承前缀 + `brake` 钳制 + `set_gear`/`/gear` 拒绝 H 与升档」。别只改前端就以为修好了。
 10. **提交分支必须展开旧状态**（`{ ...state, … }`）：`subagent` / `inherited` 丢了，下一次 `apply` 的继承守卫就失效。
+11. **换挡通知只注入一次、绝不唤醒空闲会话**：状态真的变化才注入；`agent.status === 'running'` 用 `steer`，否则用 `inject`；通知失败只记日志，不影响换挡。
+12. **完整介绍只注入一次**：`briefed` 折叠第一条 `runtime-context` 用户消息；不要在每条请求里重复介绍。
+13. **档位提交折叠两条回执**：普通会话 `tool/result.meta.gearMode`，PTC 会话 `tool/ptc-dispatch.meta.gearMode`（run_code 嵌套派发没有 tool/result 事件）。升档的即时答复不会落日志——user-questions 服务在工具完成后撤回排队的答复，别指望折叠它。
 
 ## 改哪里（速查）
 

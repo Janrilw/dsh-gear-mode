@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.2.0 — 2026-10-30 提示词机制重做：介绍注入一次、换挡通知注入一次；升档滑轨随点击跟随
+
+针对 `dsh 0.2.1-rc.5` 适配发布（`engines.dsh` 不变，仍为 `>=0.2.1-rc.2 <0.3.0`）。对 rc.5 全量核对了插件用到的宿主与前端接口，均无破坏性变化：`sessionProjections`（register/stateOf/wire）、`systemPrompt.context` + `getContextOrder('APPROVAL_POLICY')`、命令注册与 `command/run`+`command/done` 事件形状、`tools.guard`/`tools.register`（`output.presentationMeta`、`tool/result.data.meta`、PTC 的 `tool/ptc-dispatch.data.name`+`meta`）、`userQuestions.ask`（回答 `{answers:[{id,selected}]}` 与 `CALLER_NOT_LIVE`/`DELEGATED_CALLER`）、`sandboxPolicy.resolve()`、`agent.steer`/`agent.inject`/`agent.status`；前端 `__ModuleLoader__`、`locale.register/bind`、`shell.overlay` 槽位与 `[data-shell-overlay]`/`[data-slot="main"]` 测量标记、会话列表 store（`ids`/`byId` 的 `retainedBy.mainView`/`origin`/`projectionsBySession`）、`sessions.subagentAddress`、`binding().session`、`projections.faceOf`、`session.command()`（含 `session/agent-busy` 子会话拒绝形状）全部健在。本版本即在 rc.5 上日常使用验证。
+
+旧机制把整份说明书（主列纪律 + 工具规则 + 当前档正文 + 手刹提醒）压进**每一条请求**的运行时上下文，长会话里反复烧 token；升档批准只依赖 `set_gear` 的 `tool/result.meta`，meta 没到滑轨就停在旧档位。这次把提示词拆成两层，并给升档加一条第二提交通道：
+
+| 文件 | 改动 |
+|---|---|
+| `index.js` | 投影升到 `stateVersion: 4`：状态增加 `briefed`（折叠第一条 `runtime-context` 用户消息） |
+| `index.js` | 运行时上下文两分支：首条请求注入 `INTRO` 完整介绍（一次）；之后每条请求只带一行实时状态（档位 / 手刹 / scope） |
+| `index.js` | 换挡通知：`/gear` 与 `set_gear` 真正改变状态时，用 `agent.steer`（回合中）/ `agent.inject`（空闲，只入队不唤醒）注入一次「从什么档位换到什么档位 + 新档位行为要求」 |
+| `index.js` | **修滑轨不跟随**：档位提交同时折叠 `tool/result.meta` 与 `tool/ptc-dispatch.meta`。PTC 会话（模型工具经 run_code 嵌套派发）里 set_gear 没有工具结果事件，`meta.gearMode` 挂在派发事件上——0.1.x 只折 `tool/result`，PTC 会话永远收不到提交 |
+| `index.js` | `GEAR_TEXT` / `BRAKE_TEXT` 全部瘦身：只保留“模型要怎么做”；新增 `INTRO_TEXT` 取代 `ORDER_TEXT` / `TOOL_TEXT` |
+| `prompts.md` | 键 `ORDER` → `INTRO`；各档正文重写为纯行为要求（与内置逐字一致，`npm test` 校验） |
+| `test/gear-projection.test.mjs` | 16 项单测：briefed 折叠、PTC 派发提交与防御、stateVersion=4 |
+| `README.md` / `docs/ARCHITECTURE.md` | 机制、注入形态、切档时序、不变量 11–13 同步 |
+
+注入形态对照：
+
+| 时机 | 旧行为 | 新行为 |
+|---|---|---|
+| 会话第一条请求 | 全量说明书（约 1–2 KB） | `INTRO` 完整介绍 + 当前档正文（一次） |
+| 其余每条请求 | 全量说明书重注 | 一行实时状态（档位 / 手刹 / scope） |
+| 换挡时 | 无（只影响下一次请求的上下文） | steer/inject 注入一次【档位切换】通知 |
+| 升档获批时 | 只折 `tool/result.meta`（PTC 会话没有该事件，滑轨不动） | `tool/result` 与 `tool/ptc-dispatch` 都折叠，滑轨在工具返回的同一回合内跟随 |
+
+> **键名变更**：`prompts.md` 的 `## ORDER` 已由 `## INTRO` 取代，外部旧文件里的 `## ORDER` 会被忽略；其余键不变。
+>
+> **为什么通知空闲时用 inject 而不是 steer**：`steer` 会唤醒空闲的 agent，为一条通知空跑一轮对话；`inject` 只入队，下一次回合开始时模型自然看到。
+
 ## 0.1.4 — 2026-10-26 子会话自动 D 档，档位槽只读
 
 修一个长期 bug：在子智能体（subagent）会话里点档位会报 `切档失败: session … is owned by subagent routing`。根因不在前端——宿主的 `CommandDirectory` 对子会话直接返回空，`remote.commands.execute` 的 `resolveAgent` 也不走 subagent delivery，所以子会话根本无法执行 `/gear`。按「子会话自动给 D 档、档位槽只读」重做：

@@ -1,11 +1,11 @@
 /**
  * `gear` 会话投影的单元测试（node:test，不引第三方依赖）。
  *
- * 重点覆盖子会话的新行为：
- * - 起始 D 档，不继承父会话档位；
- * - 折叠时跳过继承前缀事件；
- * - 子会话永远不落手刹；
- * - 主会话 / 普通 fork 的行为保持不变。
+ * 覆盖：
+ * - 起始档位与子会话规则（起始 D、跳过继承前缀、永不落手刹）；
+ * - 完整介绍只注入一次（briefed 折叠 runtime-context 用户消息）；
+ * - 档位提交折叠两条回执：tool/result（普通会话）与 tool/ptc-dispatch
+ *   （PTC 会话——模型工具经 run_code 嵌套派发，meta.gearMode 挂在派发事件上）。
  */
 
 import test from 'node:test';
@@ -18,7 +18,7 @@ const SUBAGENT_HEADER = { origin: 'subagent' };
 
 test('projection identity: key/stateVersion stay wire-compatible', () => {
   assert.equal(gearProjection.key, 'gear');
-  assert.equal(gearProjection.stateVersion, 2);
+  assert.equal(gearProjection.stateVersion, 4);
 });
 
 test('main session starts at P with the handbrake up', () => {
@@ -27,6 +27,7 @@ test('main session starts at P with the handbrake up', () => {
   assert.equal(state.brake, false);
   assert.equal(state.subagent, false);
   assert.equal(state.inherited, 0);
+  assert.equal(state.briefed, false);
 });
 
 test('subagent session starts at D, not at the parent gear', () => {
@@ -102,6 +103,47 @@ test('invalid tool metadata is ignored', () => {
   assert.equal(gearProjection.apply(state, { seq: 2, type: 'message/added', data: {} }), state);
 });
 
+test('briefing folds only the first runtime-context user message', () => {
+  let state = gearProjection.init(MAIN_HEADER, 0);
+  assert.equal(state.briefed, false);
+  // 普通用户消息不算。
+  state = gearProjection.apply(state, userMessage(0, 'user'));
+  assert.equal(state.briefed, false);
+  state = gearProjection.apply(state, userMessage(1, 'runtime-context'));
+  assert.equal(state.briefed, true);
+  // 幂等：再来一条不产生新状态对象。
+  const before = state;
+  state = gearProjection.apply(state, userMessage(2, 'runtime-context'));
+  assert.equal(state, before);
+});
+
+test('subagent does not inherit the parent briefing', () => {
+  let state = gearProjection.init(SUBAGENT_HEADER, 5);
+  state = gearProjection.apply(state, userMessage(2, 'runtime-context'));
+  assert.equal(state.briefed, false, '继承前缀里的上下文消息不能算子会话已介绍');
+  state = gearProjection.apply(state, userMessage(5, 'runtime-context'));
+  assert.equal(state.briefed, true);
+});
+
+test('PTC dispatch carries the gear meta and commits the switch', () => {
+  let state = gearProjection.init(MAIN_HEADER, 0);
+  // PTC 会话：set_gear 是 run_code 的嵌套派发，没有 tool/call / tool/result 事件。
+  state = gearProjection.apply(state, ptcDispatch(0, 'set_gear', { gear: 'D' }, { gearMode: { gear: 'D', brake: false } }));
+  assert.equal(state.gear, 'D');
+  assert.equal(state.brake, false);
+  // 幂等：同档回执不产生新状态。
+  const before = state;
+  state = gearProjection.apply(state, ptcDispatch(1, 'set_gear', { gear: 'D' }, { gearMode: { gear: 'D', brake: false } }));
+  assert.equal(state, before);
+});
+
+test('PTC dispatch without gear meta is ignored', () => {
+  const state = gearProjection.init(MAIN_HEADER, 0);
+  assert.equal(gearProjection.apply(state, ptcDispatch(0, 'set_gear', { gear: 'D' }, undefined)), state);
+  assert.equal(gearProjection.apply(state, ptcDispatch(1, 'run_code', { code: 'x' }, { gearMode: { gear: 'D', brake: false } })), state,
+    '非 set_gear 派发不能改档（防御：meta 只认 set_gear 的自述回执）');
+});
+
 test('wire view exposes only gear and brake, with reference stability', () => {
   const state = gearProjection.init(SUBAGENT_HEADER, 0);
   const view = gearProjection.wire.view(state);
@@ -116,6 +158,7 @@ test('state schema accepts new fields and still rejects broken states', () => {
   assert.doesNotThrow(() => gearProjection.stateSchema.parse({ gear: 'P', brake: false, running: null }));
   assert.throws(() => gearProjection.stateSchema.parse({ gear: 'P', brake: false, subagent: 'yes' }));
   assert.throws(() => gearProjection.stateSchema.parse({ gear: 'P', brake: false, inherited: 1.5 }));
+  assert.throws(() => gearProjection.stateSchema.parse({ gear: 'P', brake: false, briefed: 'yes' }));
   assert.throws(() => gearProjection.stateSchema.parse({ gear: 'Z', brake: false }));
 });
 
@@ -130,3 +173,31 @@ function commandDone(seq, commandId, kind) {
 function toolResult(seq, gearMode) {
   return { seq, type: 'tool/result', data: { meta: { gearMode } } };
 }
+
+function ptcDispatch(seq, name, args, meta) {
+  return {
+    seq,
+    type: 'tool/ptc-dispatch',
+    data: {
+      rootCallId: 'call_root', parentCallId: 'call_root', subCallId: 'call_root:ptc:1',
+      name, arguments: args, isError: false,
+      content: [{ type: 'text', text: 'ok' }],
+      ...(meta === undefined ? {} : { meta }),
+    },
+  };
+}
+
+function userMessage(seq, kind) {
+  return {
+    seq,
+    type: 'user/message',
+    data: {
+      id: `m\${seq}`,
+      role: 'user',
+      content: [{ type: 'text', text: 'hello' }],
+      source: { kind },
+    },
+  };
+}
+
+undefined

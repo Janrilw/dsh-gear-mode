@@ -1,6 +1,6 @@
 {
   "name": "dsh-gear-mode",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "type": "module",
   "description": "行动档位：P/R/N/M/D/A 六档协作状态，宿主注入提示词 + 左侧档位滑轨 + set_gear 工具与手刹守卫",
   "keywords": [
@@ -37,11 +37,15 @@
     "README.md"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-layout"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
     }
   },
   "engines": {
